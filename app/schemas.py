@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, constr
 
 from app.models import Role, TaskStatus, RecurringSchedule, DocumentType
 
@@ -22,7 +22,9 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    # bcrypt only supports passwords up to 72 bytes; enforce a limit so validation
+    # fails cleanly instead of letting hashing raise a ValueError.
+    password: constr(max_length=72)
 
 
 class UserRead(UserBase):
