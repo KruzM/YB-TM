@@ -151,6 +151,106 @@ class ClientOut(ClientBase):
 
     class Config:
         from_attributes = True
+        
+# ---------- Client Intake ----------
+class ClientIntakeBase(BaseModel):
+    # Basic business info
+    legal_name: str
+    dba_name: Optional[str] = None
+    business_address: Optional[str] = None
+    tax_structure: Optional[str] = None
+    owners: Optional[str] = None  # "Alice 60%, Bob 40%"
+
+    # Contacts
+    primary_contact_name: Optional[str] = None
+    primary_contact_email: Optional[EmailStr] = None
+    primary_contact_phone: Optional[str] = None
+
+    # Bookkeeping / access
+    bookkeeping_start_date: Optional[date] = None
+    qbo_exists: Optional[bool] = None
+    allow_login_access: Optional[bool] = None
+
+    # Banking / accounts
+    num_checking: Optional[int] = None
+    checking_banks: Optional[str] = None
+    num_savings: Optional[int] = None
+    savings_banks: Optional[str] = None
+    num_credit_cards: Optional[int] = None
+    credit_card_banks: Optional[str] = None
+    loans: Optional[str] = None
+    vehicles: Optional[str] = None
+    assets: Optional[str] = None
+
+    # Transactions / behavior
+    payment_methods: Optional[str] = None
+    non_business_deposits: Optional[bool] = None
+    personal_expenses_in_business: Optional[bool] = None
+    business_expenses_in_personal: Optional[bool] = None
+
+    # Reporting / payroll
+    report_frequency: Optional[str] = None
+    income_tracking: Optional[str] = None
+    payroll_provider: Optional[str] = None
+
+    # Misc
+    additional_notes: Optional[str] = None
+
+
+class ClientIntakeCreate(ClientIntakeBase):
+    """All fields from the base model; legal_name is required there already."""
+    pass
+
+
+class ClientIntakeUpdate(BaseModel):
+    """Partial update; everything is optional."""
+    status: Optional[str] = None  # new / in_progress / completed / archived
+
+    legal_name: Optional[str] = None
+    dba_name: Optional[str] = None
+    business_address: Optional[str] = None
+    tax_structure: Optional[str] = None
+    owners: Optional[str] = None
+
+    primary_contact_name: Optional[str] = None
+    primary_contact_email: Optional[EmailStr] = None
+    primary_contact_phone: Optional[str] = None
+
+    bookkeeping_start_date: Optional[date] = None
+    qbo_exists: Optional[bool] = None
+    allow_login_access: Optional[bool] = None
+
+    num_checking: Optional[int] = None
+    checking_banks: Optional[str] = None
+    num_savings: Optional[int] = None
+    savings_banks: Optional[str] = None
+    num_credit_cards: Optional[int] = None
+    credit_card_banks: Optional[str] = None
+    loans: Optional[str] = None
+    vehicles: Optional[str] = None
+    assets: Optional[str] = None
+
+    payment_methods: Optional[str] = None
+    non_business_deposits: Optional[bool] = None
+    personal_expenses_in_business: Optional[bool] = None
+    business_expenses_in_personal: Optional[bool] = None
+
+    report_frequency: Optional[str] = None
+    income_tracking: Optional[str] = None
+    payroll_provider: Optional[str] = None
+
+    additional_notes: Optional[str] = None
+
+
+class ClientIntakeOut(ClientIntakeBase):
+    id: int
+    status: str
+    created_by_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # ---------- Account ----------
 class AccountBase(BaseModel):

@@ -1,5 +1,14 @@
 # app/models.py
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    Date,
+    DateTime,
+    Text,
+    ForeignKey,
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
 
@@ -103,6 +112,65 @@ class Document(Base):
 
     uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+class ClientIntake(Base):
+    __tablename__ = "client_intake"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Workflow status
+    status = Column(String, default="new", index=True)  # new / in_progress / completed / archived
+
+    # Basic business info
+    legal_name = Column(String, nullable=False, index=True)
+    dba_name = Column(String, nullable=True)
+    business_address = Column(String, nullable=True)
+    tax_structure = Column(String, nullable=True)  # LLC, S-Corp, etc.
+    owners = Column(Text, nullable=True)  # free-text description of owners & %s
+
+    # Contacts
+    primary_contact_name = Column(String, nullable=True)
+    primary_contact_email = Column(String, nullable=True)
+    primary_contact_phone = Column(String, nullable=True)
+
+    # Bookkeeping / access
+    bookkeeping_start_date = Column(Date, nullable=True)
+    qbo_exists = Column(Boolean, default=False)
+    allow_login_access = Column(Boolean, default=True)
+
+    # Banking / accounts
+    num_checking = Column(Integer, nullable=True)
+    checking_banks = Column(Text, nullable=True)
+    num_savings = Column(Integer, nullable=True)
+    savings_banks = Column(Text, nullable=True)
+    num_credit_cards = Column(Integer, nullable=True)
+    credit_card_banks = Column(Text, nullable=True)
+    loans = Column(Text, nullable=True)
+    vehicles = Column(Text, nullable=True)
+    assets = Column(Text, nullable=True)
+
+    # Transactions / behavior
+    payment_methods = Column(Text, nullable=True)  # ACH, checks, Square, etc.
+    non_business_deposits = Column(Boolean, default=False)
+    personal_expenses_in_business = Column(Boolean, default=False)
+    business_expenses_in_personal = Column(Boolean, default=False)
+
+    # Reporting / payroll
+    report_frequency = Column(String, nullable=True)  # monthly / quarterly / annually
+    income_tracking = Column(Text, nullable=True)
+    payroll_provider = Column(String, nullable=True)
+
+    # Misc
+    additional_notes = Column(Text, nullable=True)
+
+    # Audit
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = relationship("User", lazy="joined")
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
 
 class RecurringTask(Base):
     __tablename__ = "recurring_tasks"
