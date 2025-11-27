@@ -36,9 +36,10 @@ async def login(
     # Cookie for Swagger / non-React usage
     response.set_cookie(
         key="access_token",
-        value=token,
+        value=f"Bearer {token}",
         httponly=True,
         max_age=60 * 60,
+        expires=60 * 60,
         samesite="lax",
         secure=False,
     )

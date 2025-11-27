@@ -9,7 +9,7 @@ import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
 import Clients from "./pages/Clients";
 import AppLayout from "./layout/AppLayout";
-
+import ClientDetail from "./pages/ClientDetail";
 function SettingsPage() {
   return <div className="text-sm text-yecny-slate">Settings (coming soon)</div>;
 }
@@ -30,6 +30,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route index element={<Dashboard />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="clients" element={<Clients />} />
+            <Route path="clients/:id" element={<ClientDetail />} /> 
             <Route path="settings" element={<SettingsPage />} />
           </Route>
 

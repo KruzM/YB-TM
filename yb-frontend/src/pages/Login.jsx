@@ -1,71 +1,116 @@
 // src/pages/Login.jsx
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import logo from "/home/kruzer04/YBTM/YB-TM/yb-frontend/public/logo.png"; // if you have a local asset
 
-export default function Login() {
-  const navigate = useNavigate();
-  const { login } = useAuth();
+export default function LoginPage() {
+	const { login } = useAuth();
+	const [email, setEmail] = useState("");
+	const [password, setPassword] = useState("");
+	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState("");
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+	const params = new URLSearchParams(window.location.search);
+	const reason = params.get("reason");
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError("");
+	const handleSubmit = async (e) => {
+		e.preventDefault();
+		setError("");
+		setSubmitting(true);
+		try {
+			await login(email.trim(), password);
+		} catch (err) {
+			console.error(err);
+			setError("Invalid email or password.");
+		} finally {
+			setSubmitting(false);
+		}
+	};
 
-    try {
-      await login(email, password);
-      navigate("/");
-    } catch (err) {
-      console.error(err);
-      setError("Invalid email or password.");
-    }
-  }
+	return (
+		<div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+			<div className="w-full max-w-md">
+				{/* Card */}
+				<div className="bg-white shadow-md rounded-2xl px-8 py-10 border border-slate-100">
+					{/* Logo / Brand */}
+					<div className="flex flex-col items-center mb-8">
+						<img
+							src="/logo.png"
+							alt="YECNY Bookkeeping"
+							className="w-50 md:w-65 mb-2 drop-shadow-sm"
+						/>
 
-  return (
-    <div className="flex justify-center items-center min-h-screen bg-slate-100">
-      <div className="bg-white shadow-lg rounded-lg p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-semibold text-center mb-6">
-          Yecny OS Login
-        </h1>
+						<div className="text-slate-500 text-xs uppercase tracking-widest">
+							Internal OS Login
+						</div>
+					</div>
 
-        {error && (
-          <div className="mb-4 text-sm text-red-700 bg-red-100 border border-red-200 rounded px-3 py-2">
-            {error}
-          </div>
-        )}
+					{/* Timeout / reason notice */}
+					{reason === "timeout" && (
+						<div className="mb-4 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+							For security, you were signed out after a period of inactivity.
+							Please log in again.
+						</div>
+					)}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm mb-1">Email</label>
-            <input
-              type="email"
-              className="w-full border rounded px-3 py-2 text-sm"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm mb-1">Password</label>
-            <input
-              type="password"
-              className="w-full border rounded px-3 py-2 text-sm"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <button
-            type="submit"
-            className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
-          >
-            Sign In
-          </button>
-        </form>
-      </div>
-    </div>
-  );
+					{/* Error */}
+					{error && (
+						<div className="mb-4 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+							{error}
+						</div>
+					)}
+
+					<form onSubmit={handleSubmit} className="space-y-4">
+						<div>
+							<label
+								htmlFor="email"
+								className="block text-xs font-medium text-slate-600 mb-1"
+							>
+								Email
+							</label>
+							<input
+								id="email"
+								type="email"
+								autoComplete="email"
+								className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 bg-slate-50"
+								value={email}
+								onChange={(e) => setEmail(e.target.value)}
+								required
+							/>
+						</div>
+
+						<div>
+							<label
+								htmlFor="password"
+								className="block text-xs font-medium text-slate-600 mb-1"
+							>
+								Password
+							</label>
+							<input
+								id="password"
+								type="password"
+								autoComplete="current-password"
+								className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 bg-slate-50"
+								value={password}
+								onChange={(e) => setPassword(e.target.value)}
+								required
+							/>
+						</div>
+
+						<button
+							type="submit"
+							disabled={submitting}
+							className="w-full mt-2 inline-flex justify-center items-center rounded-lg bg-teal-700 text-white text-sm font-medium py-2.5 hover:bg-teal-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+						>
+							{submitting ? "Signing in..." : "Sign in"}
+						</button>
+					</form>
+
+					<p className="mt-6 text-[11px] text-slate-400 text-center">
+						Accuracy - Efficiency - Organization
+					</p>
+				</div>
+			</div>
+		</div>
+	);
 }

@@ -1,75 +1,135 @@
 // src/context/AuthContext.jsx
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from "react";
 import api from "../api/client";
 
 const AuthContext = createContext(null);
 
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [initializing, setInitializing] = useState(true);
 
-  // On mount, restore token if present and fetch /auth/me
-  useEffect(() => {
-    const token = localStorage.getItem("access_token");
-
-    // ?? If no token, don't hit /auth/me at all
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-
-    // Set Authorization header for all future requests
-    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-
-    async function loadUser() {
+  // Helper: actually perform logout (used on button click + timeout + 401)
+  const performLogout = useCallback(
+    async (reason = "manual") => {
       try {
-        const res = await api.get("/auth/me");
-        setUser(res.data);
-      } catch (err) {
-        console.error("Error loading current user:", err);
-        // token might be invalid/expired
-        localStorage.removeItem("access_token");
-        delete api.defaults.headers.common["Authorization"];
-        setUser(null);
+        await api.post("/auth/logout");
+      } catch (_) {
+        // ignore errors; if token is already invalid, it's fine
       } finally {
-        setLoading(false);
+        setUser(null);
+        // Hard redirect so everything resets cleanly
+        if (window.location.pathname !== "/login") {
+          const url = reason === "timeout" ? "/login?reason=timeout" : "/login";
+          window.location.href = url;
+        }
       }
-    }
+    },
+    []
+  );
 
-    loadUser();
+  // On app load: check if we have a valid session
+  useEffect(() => {
+    let isMounted = true;
+    api
+      .get("/auth/me")
+      .then((res) => {
+        if (!isMounted) return;
+        setUser(res.data);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setUser(null);
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setInitializing(false);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
+  // Listen for 401s from axios (broadcast as "app:unauthorized")
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      // If we already know there is no user, ignore
+      if (!user) return;
+      performLogout("unauthorized");
+    };
+    window.addEventListener("app:unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("app:unauthorized", handleUnauthorized);
+    };
+  }, [user, performLogout]);
+
+  // Idle timeout: if user is logged in and inactive for 1 hour, log them out
+  useEffect(() => {
+    if (!user) return;
+
+    let timeoutId;
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        performLogout("timeout");
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const activityEvents = [
+      "click",
+      "keydown",
+      "mousemove",
+      "scroll",
+      "touchstart",
+    ];
+
+    activityEvents.forEach((ev) =>
+      window.addEventListener(ev, resetTimer, { passive: true })
+    );
+    resetTimer(); // start timer immediately
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      activityEvents.forEach((ev) =>
+        window.removeEventListener(ev, resetTimer)
+      );
+    };
+  }, [user, performLogout]);
+
+  // Login function used by Login page
   const login = async (email, password) => {
-    // Backend expects query params
-    const res = await api.post("/auth/login", null, {
+    // backend expects query params on POST
+    await api.post("/auth/login", null, {
       params: { email, password },
     });
 
-    const token = res.data.access_token;
+    // Fetch the current user
+    const me = await api.get("/auth/me");
+    setUser(me.data);
 
-    // Save token & set header
-    localStorage.setItem("access_token", token);
-    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-
-    // Fetch current user
-    const meRes = await api.get("/auth/me");
-    setUser(meRes.data);
+    // Redirect to dashboard
+    window.location.href = "/";
   };
 
-  const logout = async () => {
-    try {
-      await api.post("/auth/logout");
-    } catch {
-      // ignore logout errors
-    }
-    localStorage.removeItem("access_token");
-    delete api.defaults.headers.common["Authorization"];
-    setUser(null);
+  const value = {
+    user,
+    initializing,
+    login,
+    logout: () => performLogout("manual"),
+    isAuthenticated: !!user,
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
-      {children}
+    <AuthContext.Provider value={value}>
+      {!initializing && children}
     </AuthContext.Provider>
   );
 }

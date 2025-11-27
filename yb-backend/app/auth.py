@@ -27,6 +27,8 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
     expire = datetime.utcnow() + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -48,18 +50,70 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[models
 
 
 async def get_current_user(
-    request: Request, db: Session = Depends(get_db)
+    request: Request,
+    db: Session = Depends(get_db),
 ) -> models.User:
-    """
-    DEV-ONLY VERSION:
-    Ignores JWT and simply returns the first active user in the database.
+    """Validate JWT from Authorization header or access_token cookie."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+    )
 
-    TODO: Replace with real JWT validation once the rest of the app is stable.
-    """
-    user = db.query(models.User).filter(models.User.is_active == True).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No active users found (create one via /api/auth/init-admin)",
-        )
+    token: Optional[str] = None
+
+    # 1) Prefer Authorization: Bearer <token>
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+
+    # 2) Fall back to access_token cookie
+    if token is None:
+        raw_cookie = request.cookies.get("access_token")
+        if raw_cookie:
+            if raw_cookie.lower().startswith("bearer "):
+                token = raw_cookie.split(" ", 1)[1].strip()
+            else:
+                token = raw_cookie.strip()
+
+    if not token:
+        raise credentials_exception
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(models.User).get(int(user_id))
+    if not user or not user.is_active:
+        raise credentials_exception
+
     return user
+
+def role_required(*roles: str):
+    """
+    Dependency factory that ensures the current user has one of the allowed roles.
+    Usage:
+        current_admin = Depends(require_admin)
+    """
+    def _dep(current_user: models.User = Depends(get_current_user)):
+        if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions",
+            )
+        return current_user
+
+    return _dep
+
+
+# Convenience shortcuts
+require_admin = role_required("Admin")
+require_owner = role_required("Owner")
+require_admin_or_owner = role_required("Admin", "Owner")
+
+# Manager-level
+require_manager = role_required("Manager")
+require_manager_or_admin = role_required("Manager", "Admin", "Owner")
