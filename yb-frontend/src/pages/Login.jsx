@@ -1,7 +1,7 @@
 // src/pages/Login.jsx
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import logo from "/home/kruzer04/YBTM/YB-TM/yb-frontend/public/logo.png"; // if you have a local asset
+import logo from "/src/logo.png"; // if you have a local asset
 
 export default function LoginPage() {
 	const { login } = useAuth();
@@ -35,7 +35,7 @@ export default function LoginPage() {
 					{/* Logo / Brand */}
 					<div className="flex flex-col items-center mb-8">
 						<img
-							src="/logo.png"
+							src="logo.png"
 							alt="YECNY Bookkeeping"
 							className="w-50 md:w-65 mb-2 drop-shadow-sm"
 						/>
