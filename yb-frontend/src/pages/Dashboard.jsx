@@ -1,5 +1,6 @@
 // src/pages/Dashboard.jsx
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -12,22 +13,71 @@ const STATUS_OPTIONS = [
 
 export default function Dashboard() {
 	const { user } = useAuth();
+
 	const [data, setData] = useState({
 		overdue: [],
 		today: [],
 		upcoming: [],
 		waiting_on_client: [],
 	});
+
+	const [clientsById, setClientsById] = useState({});
 	const [loading, setLoading] = useState(true);
+	const [refreshing, setRefreshing] = useState(false);
 	const [updatingId, setUpdatingId] = useState(null);
 	const [error, setError] = useState("");
 
-	const loadDashboard = async () => {
-		setLoading(true);
+	const [selectedTask, setSelectedTask] = useState(null);
+	const [detailOpen, setDetailOpen] = useState(false);
+
+	// ---- Loaders ----
+
+	const loadDashboardOnly = async () => {
 		setError("");
 		try {
 			const res = await api.get("/tasks/my-dashboard");
 			setData(res.data || {});
+		} catch (err) {
+			console.error(err);
+			setError("Failed to load your task dashboard.");
+		}
+	};
+
+	const loadClients = async () => {
+		try {
+			const res = await api.get("/clients");
+			const list = res.data || [];
+			const map = {};
+			list.forEach((c) => {
+				const displayName =
+					c.legal_name || c.dba_name || (c.id ? `Client #${c.id}` : "Client");
+				map[c.id] = displayName;
+			});
+			setClientsById(map);
+		} catch (err) {
+			console.error("Failed to load clients for dashboard:", err);
+		}
+	};
+
+	const loadAll = async () => {
+		setLoading(true);
+		setError("");
+		try {
+			const [tasksRes, clientsRes] = await Promise.all([
+				api.get("/tasks/my-dashboard"),
+				api.get("/clients"),
+			]);
+
+			setData(tasksRes.data || {});
+
+			const list = clientsRes.data || [];
+			const map = {};
+			list.forEach((c) => {
+				const displayName =
+					c.legal_name || c.dba_name || (c.id ? `Client #${c.id}` : "Client");
+				map[c.id] = displayName;
+			});
+			setClientsById(map);
 		} catch (err) {
 			console.error(err);
 			setError("Failed to load your task dashboard.");
@@ -37,21 +87,40 @@ export default function Dashboard() {
 	};
 
 	useEffect(() => {
-		loadDashboard();
+		loadAll();
 	}, []);
 
+	const handleRefresh = async () => {
+		setRefreshing(true);
+		await Promise.all([loadDashboardOnly(), loadClients()]);
+		setRefreshing(false);
+	};
+
+	// ---- Status change ----
+
 	const handleStatusChange = async (task, newStatus) => {
-		if (newStatus === task.status) return;
+		if (task.status === newStatus) return;
 		setUpdatingId(task.id);
 		try {
 			await api.put(`/tasks/${task.id}`, { status: newStatus });
-			await loadDashboard();
+			await loadDashboardOnly();
 		} catch (err) {
 			console.error(err);
 			alert("Failed to update task status.");
 		} finally {
 			setUpdatingId(null);
 		}
+	};
+	// ---- Task detail ----
+
+	const handleOpenTask = (task) => {
+		setSelectedTask(task);
+		setDetailOpen(true);
+	};
+
+	const handleCloseDetail = () => {
+		setDetailOpen(false);
+		setSelectedTask(null);
 	};
 
 	const today = new Date();
@@ -60,8 +129,9 @@ export default function Dashboard() {
 		month: "short",
 		day: "numeric",
 	});
+
 	return (
-		<div className="space-y-6">
+		<div className="space-y-6 relative">
 			{/* Header */}
 			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
 				<div>
@@ -79,69 +149,95 @@ export default function Dashboard() {
 				<div className="flex items-center gap-2 text-xs">
 					<button
 						type="button"
-						onClick={loadDashboard}
-						className="px-3 py-1.5 rounded-md border border-yecny-primary-soft bg-white text-yecny-primary text-xs font-medium hover:bg-yecny-primary-soft/30"
+						onClick={handleRefresh}
+						disabled={loading || refreshing}
+						className="px-3 py-2 rounded-md border border-slate-300 bg-white text-yecny-slate hover:bg-slate-50 disabled:opacity-60"
 					>
-						Refresh
+						{refreshing ? "Refreshing..." : "Refresh"}
 					</button>
 				</div>
 			</div>
 
 			{error && (
-				<div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+				<div className="text-xs px-3 py-2 rounded-md bg-red-50 text-red-700 border border-red-100">
 					{error}
 				</div>
 			)}
 
 			{/* Columns */}
-			{loading ? (
-				<div className="text-sm text-yecny-slate">Loading your tasks...</div>
-			) : (
-				<div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-					<TaskColumn
-						title="Overdue"
-						subtitle="Due before today"
-						tone="danger"
-						tasks={data.overdue || []}
-						updatingId={updatingId}
-						onStatusChange={handleStatusChange}
-					/>
-					<TaskColumn
-						title="Today"
-						subtitle="Due today"
-						tone="primary"
-						tasks={data.today || []}
-						updatingId={updatingId}
-						onStatusChange={handleStatusChange}
-					/>
-					<TaskColumn
-						title="Upcoming"
-						subtitle="Next 7 days"
-						tone="neutral"
-						tasks={data.upcoming || []}
-						updatingId={updatingId}
-						onStatusChange={handleStatusChange}
-					/>
-					<TaskColumn
-						title="Waiting on Client"
-						subtitle="Follow-ups required"
-						tone="amber"
-						tasks={data.waiting_on_client || []}
-						updatingId={updatingId}
-						onStatusChange={handleStatusChange}
-					/>
-				</div>
+			<div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+				<TaskColumn
+					title="Overdue"
+					subtitle="Due before today"
+					tone="danger"
+					tasks={data.overdue || []}
+					clientsById={clientsById}
+					loading={loading}
+					updatingId={updatingId}
+					onStatusChange={handleStatusChange}
+					onOpenTask={handleOpenTask}
+				/>
+				<TaskColumn
+					title="Today"
+					subtitle="Due today"
+					tone="primary"
+					tasks={data.today || []}
+					clientsById={clientsById}
+					loading={loading}
+					updatingId={updatingId}
+					onStatusChange={handleStatusChange}
+					onOpenTask={handleOpenTask}
+				/>
+				<TaskColumn
+					title="Upcoming"
+					subtitle="Next 7 days"
+					tone="neutral"
+					tasks={data.upcoming || []}
+					clientsById={clientsById}
+					loading={loading}
+					updatingId={updatingId}
+					onStatusChange={handleStatusChange}
+					onOpenTask={handleOpenTask}
+				/>
+				<TaskColumn
+					title="Waiting on Client"
+					subtitle="Follow-ups required"
+					tone="amber"
+					tasks={data.waiting_on_client || []}
+					clientsById={clientsById}
+					loading={loading}
+					updatingId={updatingId}
+					onStatusChange={handleStatusChange}
+					onOpenTask={handleOpenTask}
+				/>
+			</div>
+
+			{/* Task detail drawer */}
+			{detailOpen && selectedTask && (
+				<TaskDetailDrawer
+					task={selectedTask}
+					clientsById={clientsById}
+					onClose={handleCloseDetail}
+					onStatusChange={handleStatusChange}
+				/>
 			)}
 		</div>
 	);
 }
+
+// ----------------------
+// Task column component
+// ----------------------
 function TaskColumn({
 	title,
 	subtitle,
 	tone,
 	tasks,
+	clientsById,
+	loading,
 	updatingId,
 	onStatusChange,
+	onOpenTask,
 }) {
 	const hasTasks = tasks && tasks.length > 0;
 
@@ -170,95 +266,451 @@ function TaskColumn({
 			label: "text-amber-800",
 			countBg: "bg-amber-100",
 		},
-	}[tone || "neutral"];
+	};
+
+	const styles = toneStyles[tone] || toneStyles.neutral;
 
 	return (
 		<div
-			className={`flex flex-col rounded-xl border bg-white overflow-hidden ${toneStyles.border}`}
+			className={`rounded-xl border ${styles.border} bg-white/60 flex flex-col min-h-[260px]`}
 		>
 			<div
-				className={`px-3 py-2 flex items-center justify-between ${toneStyles.headerBg}`}
+				className={`px-4 py-2 border-b border-slate-100 flex items-center justify-between text-xs ${styles.headerBg}`}
 			>
 				<div>
-					<div className={`text-xs font-semibold ${toneStyles.label}`}>
-						{title}
-					</div>
-					<div className="text-[11px] text-yecny-slate">{subtitle}</div>
+					<div className={`font-semibold ${styles.label}`}>{title}</div>
+					<div className="text-[11px] text-slate-500">{subtitle}</div>
 				</div>
 				<div
-					className={`px-2 py-0.5 rounded-full text-[11px] font-medium text-yecny-charcoal ${toneStyles.countBg}`}
+					className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-[11px] ${styles.countBg} text-slate-700`}
 				>
-					{tasks.length}
+					{tasks?.length || 0}
 				</div>
 			</div>
 
-			<div className="flex-1 p-3 space-y-2 overflow-y-auto max-h-[420px]">
-				{!hasTasks && (
-					<div className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg px-3 py-4 text-center">
+			<div className="flex-1 px-3 py-3">
+				{loading ? (
+					<div className="text-[11px] text-slate-400 italic px-2 py-2">
+						Loading...
+					</div>
+				) : !hasTasks ? (
+					<div className="border border-dashed border-slate-200 rounded-lg px-3 py-4 text-[11px] text-slate-400 text-center">
 						No tasks in this bucket.
 					</div>
+				) : (
+					<div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+						{tasks.map((task) => (
+							<TaskCard
+								key={task.id}
+								task={task}
+								clientsById={clientsById}
+								updating={updatingId === task.id}
+								onStatusChange={onStatusChange}
+								onOpenTask={onOpenTask}
+							/>
+						))}
+					</div>
 				)}
-				{tasks.map((task) => (
-					<TaskCard
-						key={task.id}
-						task={task}
-						updating={updatingId === task.id}
-						onStatusChange={onStatusChange}
-					/>
-				))}
 			</div>
 		</div>
 	);
 }
 
-function TaskCard({ task, updating, onStatusChange }) {
+// ----------------------
+// Task card component
+// ----------------------
+function TaskCard({ task, clientsById, updating, onStatusChange, onOpenTask }) {
 	const dueLabel = task.due_date
 		? new Date(task.due_date).toLocaleDateString()
 		: "No due date";
 
 	const statusOption = STATUS_OPTIONS.find((s) => s.value === task.status);
 
+	const clientName =
+		task.client_id && clientsById
+			? clientsById[task.client_id] || `Client #${task.client_id}`
+			: null;
+
+	const handleClickDetails = () => {
+		onOpenTask?.(task);
+	};
+
 	return (
-		<div className="rounded-lg border border-slate-200 bg-white hover:border-yecny-primary-soft hover:shadow-[0_0_0_1px_rgba(0,0,0,0.02)] transition-colors px-3 py-2.5 space-y-1.5 text-xs">
+		<div className="rounded-lg border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 transition-colors px-3 py-2.5 space-y-1.5 text-xs shadow-sm">
 			<div className="flex items-start justify-between gap-2">
 				<div className="flex-1">
 					<div className="font-semibold text-yecny-charcoal text-[13px]">
 						{task.title}
 					</div>
-					{task.client_id && (
+
+					{clientName && (
 						<div className="text-[11px] text-slate-500 mt-0.5">
-							Client ID: {task.client_id}
+							Client:{" "}
+							<Link
+								to={`/clients/${task.client_id}`}
+								className="text-yecny-primary hover:underline"
+							>
+								{clientName}
+							</Link>
+						</div>
+					)}
+
+					{task.description && (
+						<div className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
+							{task.description}
 						</div>
 					)}
 				</div>
+
 				<span className="text-[11px] text-slate-400 whitespace-nowrap">
 					{dueLabel}
 				</span>
 			</div>
 
-			{task.description && (
-				<div className="text-[11px] text-slate-600 line-clamp-2">
-					{task.description}
+			<div className="flex items-center justify-between gap-3 pt-1">
+				<button
+					type="button"
+					onClick={handleClickDetails}
+					className="text-[11px] text-yecny-primary hover:underline"
+				>
+					Details
+				</button>
+
+				<div className="flex items-center gap-1">
+					<div className="inline-flex items-center text-[11px] text-slate-500 mr-1">
+						<span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-1.5" />
+						{statusOption?.label || "Unknown status"}
+					</div>
+					<select
+						className="border border-slate-300 rounded-md px-2 py-1 text-[11px] bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary disabled:opacity-60"
+						value={task.status}
+						disabled={updating}
+						onChange={(e) => onStatusChange(task, e.target.value)}
+					>
+						{STATUS_OPTIONS.map((opt) => (
+							<option key={opt.value} value={opt.value}>
+								{opt.label}
+							</option>
+						))}
+					</select>
 				</div>
-			)}
-			<div className="flex items-center justify-between gap-2 pt-1">
-				<div className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-					<span className="w-1.5 h-1.5 rounded-full bg-slate-300" />
-					<span>{statusOption?.label || task.status}</span>
+			</div>
+		</div>
+	);
+}
+// ----------------------
+// Task detail drawer
+// ----------------------
+function TaskDetailDrawer({ task, clientsById, onClose, onStatusChange }) {
+	const [subtasks, setSubtasks] = useState([]);
+	const [notes, setNotes] = useState([]);
+	const [loadingSubs, setLoadingSubs] = useState(true);
+	const [loadingNotes, setLoadingNotes] = useState(true);
+	const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+	const [newNoteBody, setNewNoteBody] = useState("");
+	const [savingSubtask, setSavingSubtask] = useState(false);
+	const [savingNote, setSavingNote] = useState(false);
+
+	const clientName =
+		task.client_id && clientsById
+			? clientsById[task.client_id] || `Client #${task.client_id}`
+			: null;
+
+	useEffect(() => {
+		if (!task?.id) return;
+
+		const fetchSubtasks = async () => {
+			setLoadingSubs(true);
+			try {
+				const res = await api.get(`/tasks/${task.id}/subtasks`);
+				setSubtasks(res.data || []);
+			} catch (err) {
+				console.error("Failed to load subtasks:", err);
+				setSubtasks([]);
+			} finally {
+				setLoadingSubs(false);
+			}
+		};
+
+		const fetchNotes = async () => {
+			setLoadingNotes(true);
+			try {
+				const res = await api.get(`/tasks/${task.id}/notes`);
+				setNotes(res.data || []);
+			} catch (err) {
+				console.error("Failed to load task notes:", err);
+				setNotes([]);
+			} finally {
+				setLoadingNotes(false);
+			}
+		};
+
+		fetchSubtasks();
+		fetchNotes();
+	}, [task?.id]);
+
+	const handleAddSubtask = async (e) => {
+		e.preventDefault();
+		const title = newSubtaskTitle.trim();
+		if (!title) return;
+		setSavingSubtask(true);
+		try {
+			const res = await api.post(`/tasks/${task.id}/subtasks`, { title });
+			setSubtasks((prev) => [...prev, res.data]);
+			setNewSubtaskTitle("");
+		} catch (err) {
+			console.error("Failed to add subtask:", err);
+			alert("Could not add subtask.");
+		} finally {
+			setSavingSubtask(false);
+		}
+	};
+
+	const handleToggleSubtask = async (subtask) => {
+		try {
+			const res = await api.put(`/tasks/${task.id}/subtasks/${subtask.id}`, {
+				title: subtask.title,
+				is_completed: !subtask.is_completed,
+			});
+			setSubtasks((prev) =>
+				prev.map((s) => (s.id === subtask.id ? res.data : s))
+			);
+		} catch (err) {
+			console.error("Failed to update subtask:", err);
+			alert("Could not update subtask.");
+		}
+	};
+
+	const handleAddNote = async (e) => {
+		e.preventDefault();
+		const body = newNoteBody.trim();
+		if (!body) return;
+		setSavingNote(true);
+		try {
+			const res = await api.post(`/tasks/${task.id}/notes`, { body });
+			setNotes((prev) => [res.data, ...prev]);
+			setNewNoteBody("");
+		} catch (err) {
+			console.error("Failed to add note:", err);
+			alert("Could not add note.");
+		} finally {
+			setSavingNote(false);
+		}
+	};
+
+	const dueLabel = task.due_date
+		? new Date(task.due_date).toLocaleDateString()
+		: "No due date";
+
+	const statusOption = STATUS_OPTIONS.find((s) => s.value === task.status);
+
+	const handleStatusSelect = (e) => {
+		const newStatus = e.target.value;
+		onStatusChange?.(task, newStatus);
+	};
+
+	return (
+		<div className="fixed inset-0 z-40 flex">
+			{/* Backdrop */}
+			<div
+				className="flex-1 bg-black/20"
+				onClick={onClose}
+				aria-hidden="true"
+			/>
+			{/* Drawer */}
+			<div className="w-full max-w-md bg-white shadow-2xl border-l border-slate-200 flex flex-col">
+				{/* Header */}
+				<div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
+					<div className="flex-1">
+						<div className="text-[11px] uppercase tracking-[0.16em] text-yecny-slate mb-1">
+							Task details
+						</div>
+						<h2 className="text-sm font-semibold text-yecny-charcoal">
+							{task.title}
+						</h2>
+						{clientName && (
+							<div className="text-[11px] text-slate-500 mt-1">
+								Client:{" "}
+								<Link
+									to={`/clients/${task.client_id}`}
+									className="text-yecny-primary hover:underline"
+								>
+									{clientName}
+								</Link>
+							</div>
+						)}
+					</div>
+					<button
+						type="button"
+						onClick={onClose}
+						className="text-xs text-slate-400 hover:text-slate-600"
+					>
+						x
+					</button>
 				</div>
 
-				<select
-					className="border border-slate-200 rounded-md bg-white text-[11px] px-2 py-1 focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary disabled:opacity-60"
-					value={task.status}
-					disabled={updating}
-					onChange={(e) => onStatusChange(task, e.target.value)}
-				>
-					{STATUS_OPTIONS.map((opt) => (
-						<option key={opt.value} value={opt.value}>
-							{opt.label}
-						</option>
-					))}
-				</select>
+				{/* Meta */}
+				<div className="px-5 py-3 border-b border-slate-100 text-[11px] flex items-center justify-between gap-3">
+					<div className="space-y-0.5">
+						<div className="text-slate-500">
+							Due date: <span className="text-slate-800">{dueLabel}</span>
+						</div>
+						{task.recurring_task_name && (
+							<div className="text-slate-500">
+								From recurring rule:{" "}
+								<span className="text-slate-800">
+									{task.recurring_task_name}
+								</span>
+							</div>
+						)}
+					</div>
+					<div className="flex flex-col items-end gap-1">
+						<span className="text-slate-500">
+							Status:{" "}
+							<span className="text-slate-800">
+								{statusOption?.label || "Unknown"}
+							</span>
+						</span>
+						<select
+							value={task.status}
+							onChange={handleStatusSelect}
+							className="border border-slate-300 rounded-md px-2 py-1 text-[11px] bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+						>
+							{STATUS_OPTIONS.map((opt) => (
+								<option key={opt.value} value={opt.value}>
+									{opt.label}
+								</option>
+							))}
+						</select>
+					</div>
+				</div>
+
+				{/* Body */}
+				<div className="flex-1 overflow-y-auto px-5 py-4 space-y-6 text-xs">
+					{/* Description */}
+					<section className="space-y-2">
+						<div className="font-semibold text-yecny-charcoal">Description</div>
+						<div className="text-slate-600 whitespace-pre-wrap">
+							{task.description || (
+								<span className="text-slate-400">No description set.</span>
+							)}
+						</div>
+					</section>
+					{/* Subtasks */}
+					<section className="space-y-2">
+						<div className="flex items-center justify-between">
+							<div className="font-semibold text-yecny-charcoal">Subtasks</div>
+						</div>
+						{loadingSubs ? (
+							<div className="text-slate-400">Loading subtasks...</div>
+						) : subtasks.length === 0 ? (
+							<div className="text-slate-400">
+								No subtasks yet. Add the steps for this task below.
+							</div>
+						) : (
+							<ul className="space-y-1.5">
+								{subtasks.map((s) => (
+									<li key={s.id} className="flex items-start gap-2">
+										<input
+											type="checkbox"
+											checked={s.is_completed}
+											onChange={() => handleToggleSubtask(s)}
+											className="mt-0.5 h-3 w-3 border-slate-300 rounded"
+										/>
+										<span
+											className={
+												"flex-1 " +
+												(s.is_completed
+													? "line-through text-slate-400"
+													: "text-slate-700")
+											}
+										>
+											{s.title}
+										</span>
+									</li>
+								))}
+							</ul>
+						)}
+
+						<form
+							onSubmit={handleAddSubtask}
+							className="mt-2 flex items-center gap-2"
+						>
+							<input
+								type="text"
+								placeholder="Add subtask-"
+								value={newSubtaskTitle}
+								onChange={(e) => setNewSubtaskTitle(e.target.value)}
+								className="flex-1 border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+							/>
+							<button
+								type="submit"
+								disabled={savingSubtask}
+								className="px-2 py-1 rounded-md bg-yecny-primary text-white text-[11px] hover:bg-yecny-primary-dark disabled:opacity-60"
+							>
+								{savingSubtask ? "Adding..." : "Add"}
+							</button>
+						</form>
+					</section>
+					{/* Notes */}
+					<section className="space-y-2">
+						<div className="font-semibold text-yecny-charcoal">
+							Internal notes
+						</div>
+
+						<form
+							onSubmit={handleAddNote}
+							className="border border-slate-200 rounded-md p-2 space-y-2"
+						>
+							<textarea
+								rows={3}
+								placeholder="Add a note about this task-"
+								value={newNoteBody}
+								onChange={(e) => setNewNoteBody(e.target.value)}
+								className="w-full text-[11px] border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary resize-none"
+							/>
+							<div className="flex justify-end">
+								<button
+									type="submit"
+									disabled={savingNote}
+									className="px-3 py-1.5 rounded-md bg-yecny-primary text-white text-[11px] hover:bg-yecny-primary-dark disabled:opacity-60"
+								>
+									{savingNote ? "Saving..." : "Add note"}
+								</button>
+							</div>
+						</form>
+
+						{loadingNotes ? (
+							<div className="text-slate-400">Loading notes...</div>
+						) : notes.length === 0 ? (
+							<div className="text-slate-400 text-[11px]">
+								No notes yet. Use this space to track questions, context, or
+								client interactions.
+							</div>
+						) : (
+							<ul className="space-y-2">
+								{notes.map((n) => (
+									<li
+										key={n.id}
+										className="border border-slate-200 rounded-md p-2"
+									>
+										<div className="text-[11px] text-slate-500 mb-1 flex justify-between">
+											<span>{n.author_name || "Team member"}</span>
+											<span>
+												{n.created_at
+													? new Date(n.created_at).toLocaleString()
+													: ""}
+											</span>
+										</div>
+										<div className="text-[11px] text-slate-700 whitespace-pre-wrap">
+											{n.body}
+										</div>
+									</li>
+								))}
+							</ul>
+						)}
+					</section>
+				</div>
 			</div>
 		</div>
 	);

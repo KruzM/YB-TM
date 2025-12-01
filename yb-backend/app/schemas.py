@@ -2,7 +2,7 @@
 from datetime import datetime, date
 from typing import Optional, List
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, constr
 
 
 # ---------- User ----------
@@ -39,10 +39,12 @@ class TokenResponse(BaseModel):
 # ---------- Task ----------
 class TaskBase(BaseModel):
     title: str
-    description: Optional[str] = None
-    status: Optional[str] = "new"
-    client_id: Optional[int] = None
-    recurring_task_id: Optional[int] = None
+    description: str | None = None
+    status: str | None = None
+    due_date: datetime | None = None
+    client_id: int | None = None
+    assigned_user_id: int | None = None
+    recurring_task_id: int | None = None
 
 class TaskCreate(TaskBase):
     due_date: Optional[datetime] = None
@@ -72,6 +74,40 @@ class TaskDashboardResponse(BaseModel):
     today: List[TaskOut]
     upcoming: List[TaskOut]
     waiting_on_client: List[TaskOut]
+
+class TaskSubtaskBase(BaseModel):
+    title: constr(min_length=1, max_length=255)
+
+class TaskSubtaskCreate(TaskSubtaskBase):
+    pass
+
+class TaskSubtaskUpdate(TaskSubtaskBase):
+    is_completed: bool
+
+class TaskSubtaskOut(TaskSubtaskBase):
+    id: int
+    is_completed: bool
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class TaskNoteBase(BaseModel):
+    body: constr(min_length=1)
+
+class TaskNoteCreate(TaskNoteBase):
+    pass
+
+class TaskNoteOut(TaskNoteBase):
+    id: int
+    task_id: int
+    author_id: int | None = None
+    author_name: str | None = None  # you can populate this in a property or query
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
 
 # ---------- Recurring Task ----------
 

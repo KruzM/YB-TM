@@ -1,11 +1,11 @@
 # app/routes_tasks.py
+from datetime import date, timedelta, datetime
 from typing import List, Optional
-from sqlalchemy import func
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from .recurring_utils import advance_next_run
-from datetime import date, datetime, timedelta
+from sqlalchemy import func
+
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
@@ -13,19 +13,35 @@ from .auth import get_current_user
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+# --------- Core task CRUD ----------
+
 @router.get("/", response_model=List[schemas.TaskOut])
 async def list_tasks(
+    q: Optional[str] = None,
     status: Optional[str] = None,
+    client_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    query = db.query(models.Task)
+    """
+    Central list of tasks with optional filters.
+    """
+    query = db.query(models.Task).filter(
+        models.Task.assigned_user_id == current_user.id
+    )
 
-    if status:
+    if q:
+        like = f"%{q}%"
+        query = query.filter(models.Task.title.ilike(like))
+
+    if status and status != "all":
         query = query.filter(models.Task.status == status)
 
-    # later we can filter by current_user.id for "my tasks"
-    tasks = query.order_by(models.Task.due_date).all()
+    if client_id:
+        query = query.filter(models.Task.client_id == client_id)
+
+    # Newest first
+    tasks = query.order_by(models.Task.created_at.desc()).all()
     return tasks
 
 
@@ -35,13 +51,17 @@ async def create_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    """
+    Create a new ad-hoc task (not from recurring rule).
+    """
     task = models.Task(
         title=task_in.title,
         description=task_in.description,
         status=task_in.status or "new",
         due_date=task_in.due_date,
-        assigned_user_id=task_in.assigned_user_id or current_user.id,
         client_id=task_in.client_id,
+        assigned_user_id=current_user.id,
+        recurring_task_id=task_in.recurring_task_id,
     )
     db.add(task)
     db.commit()
@@ -56,60 +76,34 @@ async def update_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    task = db.query(models.Task).filter(models.Task.id == task_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    previous_status = task.status
-
-    # apply updates
-    for field, value in task_in.dict(exclude_unset=True).items():
-        setattr(task, field, value)
-
-    # flush changes so task.status is updated in memory
-    db.flush()
-
-    # If this task just transitioned to completed AND is tied to a recurring template,
-    # spawn the next instance.
-    if (
-        previous_status != "completed"
-        and task.status == "completed"
-        and task.recurring_task_id is not None
-    ):
-        rt = (
-            db.query(models.RecurringTask)
-            .filter(models.RecurringTask.id == task.recurring_task_id)
-            .first()
+    """
+    Update a task. Commonly used to change status or due_date.
+    """
+    task = (
+        db.query(models.Task)
+        .filter(
+            models.Task.id == task_id,
+            models.Task.assigned_user_id == current_user.id,
         )
-        if rt and rt.active:
-            # compute next due date
-            new_due = advance_next_run(
-                rt.schedule_type,
-                rt.next_run,
-                day_of_month=rt.day_of_month,
-                weekday=rt.weekday,
-                week_of_month=rt.week_of_month,
-            )
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-            # update rule
-            rt.next_run = new_due
-
-            # create new task
-            new_task = models.Task(
-                title=rt.name,
-                description=rt.description or "",
-                status=rt.default_status or "new",
-                due_date=new_due,
-                client_id=rt.client_id,
-                assigned_user_id=rt.assigned_user_id or task.assigned_user_id,
-                recurring_task_id=rt.id,
-            )
-            db.add(new_task)
+    if task_in.title is not None:
+        task.title = task_in.title
+    if task_in.description is not None:
+        task.description = task_in.description
+    if task_in.status is not None:
+        task.status = task_in.status
+    if task_in.due_date is not None:
+        task.due_date = task_in.due_date
+    if task_in.client_id is not None:
+        task.client_id = task_in.client_id
 
     db.commit()
     db.refresh(task)
     return task
-
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(
@@ -117,20 +111,32 @@ async def delete_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    task = (
+        db.query(models.Task)
+        .filter(
+            models.Task.id == task_id,
+            models.Task.assigned_user_id == current_user.id,
+        )
+        .first()
+    )
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
     db.delete(task)
     db.commit()
     return None
+
+
+# --------- Dashboard endpoint ----------
 
 @router.get("/my-dashboard", response_model=schemas.TaskDashboardResponse)
 async def get_my_dashboard(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Return tasks for the current user grouped for the dashboard view."""
+    """
+    Return tasks for the current user grouped for the dashboard view.
+    """
     today = date.today()
     seven_days = today + timedelta(days=7)
 
@@ -138,35 +144,38 @@ async def get_my_dashboard(
         models.Task.assigned_user_id == current_user.id
     )
 
-    # Overdue: due before today (by date), not completed
+    # Overdue: due before today (by date), not completed, not waiting_on_client
     overdue = (
         base_q.filter(
-            models.Task.due_date != None,  # noqa: E711
+            models.Task.due_date.isnot(None),
             func.date(models.Task.due_date) < today,
             models.Task.status != "completed",
+            models.Task.status != "waiting_on_client",
         )
         .order_by(models.Task.due_date.asc())
         .all()
     )
 
-    # Today: due today (by date), not completed
+    # Today: due today (by date), not completed, not waiting_on_client
     today_tasks = (
         base_q.filter(
-            models.Task.due_date != None,  # noqa: E711
+            models.Task.due_date.isnot(None),
             func.date(models.Task.due_date) == today,
             models.Task.status != "completed",
+            models.Task.status != "waiting_on_client",
         )
         .order_by(models.Task.created_at.asc())
         .all()
     )
 
-    # Upcoming: due in next 7 days (tomorrow .. today+7), not completed
+    # Upcoming: due in next 7 days (tomorrow .. today+7), not completed, not waiting_on_client
     upcoming = (
         base_q.filter(
-            models.Task.due_date != None,  # noqa: E711
-            func.date(models.Task.due_date) > today,        # strictly after today
-            func.date(models.Task.due_date) <= seven_days,  # within next 7 days
+            models.Task.due_date.isnot(None),
+            func.date(models.Task.due_date) > today,
+            func.date(models.Task.due_date) <= seven_days,
             models.Task.status != "completed",
+            models.Task.status != "waiting_on_client",
         )
         .order_by(models.Task.due_date.asc())
         .all()
@@ -179,9 +188,145 @@ async def get_my_dashboard(
         .all()
     )
 
-    return {
-        "overdue": overdue,
-        "today": today_tasks,
-        "upcoming": upcoming,
-        "waiting_on_client": waiting,
-    }
+    return schemas.TaskDashboardResponse(
+        overdue=overdue,
+        today=today_tasks,
+        upcoming=upcoming,
+        waiting_on_client=waiting,
+    )
+
+
+# --------- Subtasks ----------
+
+@router.get("/{task_id}/subtasks", response_model=List[schemas.TaskSubtaskOut])
+async def list_subtasks(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_task_visible(task_id, db, current_user)
+    return (
+        db.query(models.TaskSubtask)
+        .filter(models.TaskSubtask.task_id == task_id)
+        .order_by(models.TaskSubtask.sort_order, models.TaskSubtask.id)
+        .all()
+    )
+
+@router.post(
+    "/{task_id}/subtasks",
+    response_model=schemas.TaskSubtaskOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_subtask(
+    task_id: int,
+    sub_in: schemas.TaskSubtaskCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_task_visible(task_id, db, current_user)
+    sub = models.TaskSubtask(task_id=task_id, title=sub_in.title.strip())
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+@router.put(
+    "/{task_id}/subtasks/{sub_id}",
+    response_model=schemas.TaskSubtaskOut,
+)
+async def update_subtask(
+    task_id: int,
+    sub_id: int,
+    sub_in: schemas.TaskSubtaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_task_visible(task_id, db, current_user)
+    sub = (
+        db.query(models.TaskSubtask)
+        .filter(
+            models.TaskSubtask.id == sub_id,
+            models.TaskSubtask.task_id == task_id,
+        )
+        .first()
+    )
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subtask not found")
+
+    sub.title = sub_in.title.strip()
+    sub.is_completed = sub_in.is_completed
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+# --------- Notes ----------
+
+@router.get("/{task_id}/notes", response_model=List[schemas.TaskNoteOut])
+async def list_notes(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_task_visible(task_id, db, current_user)
+    notes = (
+        db.query(models.TaskNote)
+        .filter(models.TaskNote.task_id == task_id)
+        .order_by(models.TaskNote.created_at.desc())
+        .all()
+    )
+
+    # Optionally populate author_name from related User
+    result: List[models.TaskNote] = []
+    for n in notes:
+        if n.author and not getattr(n, "author_name", None):
+            # just attach a convenience attribute; Pydantic will map it
+            n.author_name = n.author.name or n.author.email  # type: ignore[attr-defined]
+        result.append(n)
+    return result
+
+@router.post(
+    "/{task_id}/notes",
+    response_model=schemas.TaskNoteOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_note(
+    task_id: int,
+    note_in: schemas.TaskNoteCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_task_visible(task_id, db, current_user)
+    note = models.TaskNote(
+        task_id=task_id,
+        body=note_in.body.strip(),
+        author_id=current_user.id if current_user else None,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+
+    if note.author and not getattr(note, "author_name", None):
+        note.author_name = note.author.name or note.author.email  # type: ignore[attr-defined]
+
+    return note
+
+
+# --------- Helper ----------
+
+def _ensure_task_visible(task_id: int, db: Session, current_user: models.User) -> None:
+    """
+    Ensure the task exists and belongs to the current user.
+    Raises 404 if not visible.
+    """
+    task = (
+        db.query(models.Task)
+        .filter(
+            models.Task.id == task_id,
+            models.Task.assigned_user_id == current_user.id,
+        )
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")

@@ -171,6 +171,9 @@ class ClientIntake(Base):
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+  # If converted to client, link to client record
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
+    converted_at = Column(DateTime, nullable=True)
 
 class RecurringTask(Base):
     __tablename__ = "recurring_tasks"
@@ -228,3 +231,43 @@ class Task(Base):
     )
 
     assigned_user = relationship("User", back_populates="tasks")
+    subtasks = relationship(
+        "TaskSubtask",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
+    notes = relationship(
+        "TaskNote",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
+
+class TaskSubtask(Base):
+    __tablename__ = "task_subtasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), index=True, nullable=False)
+    title = Column(String, nullable=False)
+    is_completed = Column(Boolean, default=False)
+    sort_order = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    task = relationship("Task", back_populates="subtasks")
+
+
+class TaskNote(Base):
+    __tablename__ = "task_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), index=True, nullable=False)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    body = Column(Text, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    task = relationship("Task", back_populates="notes")
+    author = relationship("User")

@@ -1,3 +1,4 @@
+// src/main.jsx
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
@@ -11,6 +12,8 @@ import Clients from "./pages/Clients";
 import AppLayout from "./layout/AppLayout";
 import ClientDetail from "./pages/ClientDetail";
 import ClientIntake from "./pages/ClientIntake";
+import ClientIntakeList from "./pages/ClientIntakeList";
+
 function SettingsPage() {
 	return <div className="text-sm text-yecny-slate">Settings (coming soon)</div>;
 }
@@ -32,9 +35,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 						<Route path="tasks" element={<Tasks />} />
 						<Route path="clients" element={<Clients />} />
 						<Route path="clients/:id" element={<ClientDetail />} />
+						<Route path="clients/intake" element={<ClientIntakeList />} />
+						<Route path="clients/intake/new" element={<ClientIntake />} />
 						<Route path="settings" element={<SettingsPage />} />
 					</Route>
-					<Route path="/clients/intake" element={<ClientIntake />} />
+
 					<Route path="/login" element={<Login />} />
 				</Routes>
 			</AuthProvider>
