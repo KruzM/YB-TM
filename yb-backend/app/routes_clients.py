@@ -154,6 +154,33 @@ async def update_client(
     db.commit()
     db.refresh(client)
     return client
+@router.get(
+    "/{client_id}/onboarding-tasks",
+    response_model=List[schemas.TaskOut],
+)
+async def list_client_onboarding_tasks(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Return all onboarding tasks for a single client.
+    Used for the Client -> Onboarding tab in the UI.
+    """
+    client = db.query(models.Client).get(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    tasks = (
+        db.query(models.Task)
+        .filter(
+            models.Task.client_id == client_id,
+            models.Task.task_type == "onboarding",
+        )
+        .order_by(models.Task.onboarding_phase.asc(), models.Task.due_date.asc())
+        .all()
+    )
+    return tasks
 
 @router.get(
     "/{client_id}/purge-requests",

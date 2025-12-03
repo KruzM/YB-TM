@@ -1,4 +1,6 @@
 # app/models.py
+from __future__ import annotations
+from enum import Enum
 from sqlalchemy import (
     Column,
     Integer,
@@ -11,7 +13,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
-
 from .database import Base
 
 
@@ -25,7 +26,46 @@ class User(Base):
     role = Column(String, default="bookkeeper")  # admin/manager/bookkeeper/client
     is_active = Column(Boolean, default=True)
 
-    tasks = relationship("Task", back_populates="assigned_user")
+    # Tasks assigned to this user
+    tasks = relationship(
+        "Task",
+        back_populates="assigned_user",
+        foreign_keys="Task.assigned_user_id",
+    )
+
+    # (optional) tasks they created - handy but not required
+    created_tasks = relationship(
+        "Task",
+        foreign_keys="Task.created_by_id",
+        back_populates="created_by",
+    )
+
+# Contact Model
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Display fields
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+
+    # 'individual' or 'entity'
+    type = Column(String, nullable=False, default="individual")
+
+    # True if this contact represents a client in the system
+    is_client = Column(Boolean, nullable=False, default=False)
+
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
 # Client Model
 class Client(Base):
@@ -46,13 +86,24 @@ class Client(Base):
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     bookkeeper_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
+    #link to a Contact record for primary contact
+    primary_contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=True,
+        index=True,
+    )
+
     created_at = Column(
         DateTime, default=datetime.utcnow, nullable=False
     )
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
-    
+
+    #relationship to Contact
+    primary_contact_contact = relationship("Contact")
+
 class Account(Base):
     __tablename__ = "accounts"
 
@@ -207,6 +258,37 @@ class RecurringTask(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+class OnboardingTemplateTask(Base):
+    __tablename__ = "onboarding_template_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Used to group tasks in the client onboarding tab
+    phase = Column(String, nullable=True)  # e.g. "Pre-QBO Setup", "Bank Feeds"
+
+    # X days after client.created_at to set the due date
+    default_due_offset_days = Column(Integer, nullable=True)
+
+    # 'bookkeeper', 'manager', 'admin' � we�ll just use plain strings
+    default_assigned_role = Column(String, nullable=True)
+
+    # Order for display
+    order_index = Column(Integer, nullable=False, default=0)
+
+    # Soft on/off
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Back-reference from Task
+    generated_tasks = relationship(
+        "Task",
+        back_populates="template_task",
+        cascade="all, delete-orphan",
+    )
+
+    #---------- Task ----------
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -217,7 +299,7 @@ class Task(Base):
     due_date = Column(DateTime, nullable=True)
 
     assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    client_id = Column(Integer, nullable=True)  # later will FK to clients
+    client_id = Column(Integer, nullable=True)  # later can be FK to clients
 
     recurring_task_id = Column(
         Integer,
@@ -225,12 +307,51 @@ class Task(Base):
         nullable=True,
         index=True,
     )
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+
+    # NEW: onboarding / task classification fields
+    task_type = Column(
+        String,
+        nullable=False,
+        default="recurring",  # 'recurring', 'onboarding', 'project', 'ad_hoc'
     )
 
-    assigned_user = relationship("User", back_populates="tasks")
+    # NEW: grouping for onboarding tab
+    onboarding_phase = Column(String, nullable=True)
+
+    # NEW: link back to the template row that created this task (if any)
+    template_task_id = Column(
+        Integer,
+        ForeignKey("onboarding_template_tasks.id"),
+        nullable=True,
+    )
+
+    # NEW: who created this task
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    assigned_user = relationship(
+        "User",
+        back_populates="tasks",
+        foreign_keys=[assigned_user_id],
+    )
+
+    created_by = relationship(
+        "User",
+        back_populates="created_tasks",
+        foreign_keys=[created_by_id],
+    )
+
+    template_task = relationship(
+        "OnboardingTemplateTask",
+        back_populates="generated_tasks",
+    )
+
     subtasks = relationship(
         "TaskSubtask",
         back_populates="task",

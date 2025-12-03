@@ -8,7 +8,7 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
 from datetime import datetime
-
+from .onboarding import create_onboarding_tasks_for_client
 from .routes_clients import create_default_recurring_tasks_for_client
 router = APIRouter(prefix="/intake", tags=["client-intake"])
 
@@ -216,6 +216,73 @@ def create_accounts_from_intake(db, client, intake):
         db.add(account)
         # -- Loans, Vehicles, Etc could be added similarly --
 
+def create_contacts_from_intake(
+    db: Session,
+    client: models.Client,
+    intake: models.ClientIntake,
+):
+    """
+    Ensure Contact records exist for:
+      - The client entity (legal_name)
+      - The primary contact person (if provided)
+
+    Then link client.primary_contact_id to the primary contact person.
+    """
+
+    # --- Client entity as a Contact (type = entity) ---
+    entity_contact = (
+        db.query(models.Contact)
+        .filter(
+            models.Contact.name == client.legal_name,
+            models.Contact.is_client == True,
+        )
+        .first()
+    )
+
+    if not entity_contact:
+        entity_contact = models.Contact(
+            name=client.legal_name,
+            email=client.email,
+            phone=client.phone,
+            type="entity",
+            is_client=True,
+            notes=None,
+        )
+        db.add(entity_contact)
+        db.flush()  # get id
+
+    # --- Primary contact person as a Contact (type = individual) ---
+    primary_name = getattr(intake, "primary_contact_name", None)
+    primary_email = getattr(intake, "primary_contact_email", None)
+    primary_phone = getattr(intake, "primary_contact_phone", None)
+
+    primary_contact = None
+    if primary_name:
+        query = db.query(models.Contact).filter(
+            models.Contact.name == primary_name,
+        )
+        if primary_email:
+            query = query.filter(models.Contact.email == primary_email)
+
+        primary_contact = query.first()
+
+        if not primary_contact:
+            primary_contact = models.Contact(
+                name=primary_name,
+                email=primary_email,
+                phone=primary_phone,
+                type="individual",
+                is_client=False,
+                notes=None,
+            )
+            db.add(primary_contact)
+            db.flush()
+
+    # Link client to primary contact (if we have one)
+    if primary_contact:
+        client.primary_contact_id = primary_contact.id
+
+    # We don't commit here; caller will commit once after all setup.
 
 @router.post("/{intake_id}/convert-to-client", response_model=schemas.ClientOut)
 async def convert_intake_to_client(
@@ -249,7 +316,7 @@ async def convert_intake_to_client(
         if client:
             return client
 
-    # Map intake ? client fields (adjust field names if needed)
+    # Map intake -> client fields (adjust field names if needed)
     report_freq = (getattr(intake, "report_frequency", "") or "").lower()
 
     client = models.Client(
@@ -269,13 +336,22 @@ async def convert_intake_to_client(
     db.add(client)
     db.flush()  # so client.id is available
 
-    # ?? NEW: create Accounts based on intake answers
+    # create/ensure Contact records and link primary_contact_id
+    create_contacts_from_intake(db, client, intake)
+    
+    # create Accounts based on intake answers
     create_accounts_from_intake(db, client, intake)
 
-    # ?? Also create default recurring rules/tasks (if you already had this helper)
+    # Also create default recurring rules/tasks (if you already had this helper)
     create_default_recurring_tasks_for_client(db, client, current_user)
-
-    # Link intake ? client and mark as converted
+    
+    # Create onboarding tasks for the new client
+    create_onboarding_tasks_for_client(
+        db=db,
+        client=client,
+        created_by_user_id=current_user.id,
+    )
+    # Link intake -> client and mark as converted
     if hasattr(intake, "client_id"):
         intake.client_id = client.id
     if hasattr(intake, "status"):

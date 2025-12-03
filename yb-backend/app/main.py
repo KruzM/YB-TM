@@ -12,6 +12,8 @@ from . import (
     routes_documents,
     routes_recurring,
     routes_intake,   
+    routes_onboarding,
+    routes_contacts,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -41,6 +43,8 @@ app.include_router(routes_accounts.router, prefix="/api")
 app.include_router(routes_documents.router, prefix="/api")
 app.include_router(routes_recurring.router, prefix="/api") 
 app.include_router(routes_intake.router, prefix="/api")
+app.include_router(routes_onboarding.router, prefix="/api")
+app.include_router(routes_contacts.router, prefix="/api") 
 
 @app.get("/api/health")
 async def health():

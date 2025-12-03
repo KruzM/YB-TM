@@ -7,6 +7,7 @@ const navItems = [
 	{ to: "/clients", label: "Clients" },
 	{ to: "/settings", label: "Settings" },
 	{ to: "/clients/intake", label: "Client Intake" },
+	{ to: "/contacts", label: "Contacts" },
 ];
 
 export default function AppLayout() {

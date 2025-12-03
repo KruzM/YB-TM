@@ -13,7 +13,7 @@ import AppLayout from "./layout/AppLayout";
 import ClientDetail from "./pages/ClientDetail";
 import ClientIntake from "./pages/ClientIntake";
 import ClientIntakeList from "./pages/ClientIntakeList";
-
+import Contacts from "./pages/Contacts";
 function SettingsPage() {
 	return <div className="text-sm text-yecny-slate">Settings (coming soon)</div>;
 }
@@ -34,6 +34,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 						<Route index element={<Dashboard />} />
 						<Route path="tasks" element={<Tasks />} />
 						<Route path="clients" element={<Clients />} />
+						<Route path="contacts" element={<Contacts />} />
 						<Route path="clients/:id" element={<ClientDetail />} />
 						<Route path="clients/intake" element={<ClientIntakeList />} />
 						<Route path="clients/intake/new" element={<ClientIntake />} />

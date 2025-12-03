@@ -46,6 +46,11 @@ class TaskBase(BaseModel):
     assigned_user_id: int | None = None
     recurring_task_id: int | None = None
 
+    # NEW: onboarding / classification
+    task_type: str | None = "recurring"  # 'recurring', 'onboarding', 'project', 'ad_hoc'
+    onboarding_phase: str | None = None
+    template_task_id: int | None = None
+
 class TaskCreate(TaskBase):
     due_date: Optional[datetime] = None
     assigned_user_id: Optional[int] = None
@@ -58,6 +63,9 @@ class TaskUpdate(BaseModel):
     recurring_task_id: Optional[int] = None
     due_date: Optional[datetime] = None
     assigned_user_id: Optional[int] = None
+    task_type: Optional[str] = None
+    onboarding_phase: Optional[str] = None
+    template_task_id: Optional[int] = None
 
 class TaskOut(TaskBase):
     id: int
@@ -65,7 +73,7 @@ class TaskOut(TaskBase):
     assigned_user_id: Optional[int]
     created_at: datetime
     updated_at: datetime
-
+    created_by_id: int | None = None
     class Config:
         from_attributes = True
 
@@ -170,6 +178,7 @@ class ClientBase(BaseModel):
 
     manager_id: Optional[int] = None
     bookkeeper_id: Optional[int] = None
+    primary_contact_id: Optional[int] = None
 
 
 class ClientCreate(ClientBase):
@@ -352,6 +361,78 @@ class ClientPurgeRequestOut(BaseModel):
     created_at: datetime
     approved_at: Optional[datetime]
     executed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+        
+# ---------- Onboarding Template Task ----------
+
+class OnboardingTemplateTaskBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    phase: Optional[str] = None
+
+    # X days after client.created_at for default due date
+    default_due_offset_days: Optional[int] = None
+
+    # 'bookkeeper', 'manager', 'admin'
+    default_assigned_role: Optional[str] = None
+
+    order_index: int = 0
+    is_active: bool = True
+
+
+class OnboardingTemplateTaskCreate(OnboardingTemplateTaskBase):
+    pass
+
+
+class OnboardingTemplateTaskUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    phase: Optional[str] = None
+    default_due_offset_days: Optional[int] = None
+    default_assigned_role: Optional[str] = None
+    order_index: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class OnboardingTemplateTaskOut(OnboardingTemplateTaskBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# ---------- Contact ----------
+
+class ContactBase(BaseModel):
+    name: str
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+
+    # 'individual' or 'entity'
+    type: str = "individual"
+
+    is_client: bool = False
+    notes: Optional[str] = None
+
+
+class ContactCreate(ContactBase):
+    pass
+
+
+class ContactUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    type: Optional[str] = None
+    is_client: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ContactOut(ContactBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

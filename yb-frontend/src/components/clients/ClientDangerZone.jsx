@@ -173,7 +173,7 @@ export default function ClientDangerZone({ clientId, clientName }) {
 			{/* Status summary */}
 			<div className="text-xs text-slate-500">
 				{loading ? (
-					"Loading purge status�"
+					"Loading purge status..."
 				) : pendingRequest ? (
 					<>
 						Pending purge request created{" "}
@@ -191,7 +191,7 @@ export default function ClientDangerZone({ clientId, clientName }) {
 					Purge history
 				</div>
 				{loading ? (
-					<div className="px-3 py-2 text-xs text-slate-500">Loading�</div>
+					<div className="px-3 py-2 text-xs text-slate-500">Loading...</div>
 				) : requests.length === 0 ? (
 					<div className="px-3 py-2 text-xs text-slate-500">
 						No purge activity for this client.

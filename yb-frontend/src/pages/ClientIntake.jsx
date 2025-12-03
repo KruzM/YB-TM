@@ -114,7 +114,13 @@ export default function ClientIntake() {
 		additional_notes: form.additional_notes.trim() || null,
 	});
 
-	const saveIntake = async (exitAfter = false) => {
+	// ?? Core save function, now supports:
+	// - exitAfter (go back to list)
+	// - convertAfter (hit convert endpoint & jump to client)
+	const saveIntake = async ({
+		exitAfter = false,
+		convertAfter = false,
+	} = {}) => {
 		setSaving(true);
 		setError("");
 		setSuccess("");
@@ -128,7 +134,32 @@ export default function ClientIntake() {
 		const payload = buildPayload();
 
 		try {
-			await api.post("/intake", payload);
+			// 1) Create intake
+			const res = await api.post("/intake", payload);
+			const intake = res.data;
+
+			// 2) If we want to convert immediately, do that now
+			if (convertAfter) {
+				try {
+					const convertRes = await api.post(
+						`/intake/${intake.id}/convert-to-client`
+					);
+					const client = convertRes.data;
+
+					// Go straight to the new client detail
+					navigate(`/clients/${client.id}`);
+					return; // don't run exitAfter logic
+				} catch (err) {
+					console.error(err);
+					setError(
+						"Intake saved, but converting to a client failed. You can try again from the intake list."
+					);
+					setSuccess("Intake saved successfully.");
+					return;
+				}
+			}
+
+			// 3) Normal save behavior (no convert)
 			if (exitAfter) {
 				navigate("/clients/intake");
 			} else {
@@ -141,14 +172,17 @@ export default function ClientIntake() {
 			setSaving(false);
 		}
 	};
-
 	const handleSubmit = async (e) => {
 		e.preventDefault();
-		await saveIntake(false);
+		await saveIntake({ exitAfter: false, convertAfter: false });
 	};
 
 	const handleSaveAndExit = async () => {
-		await saveIntake(true);
+		await saveIntake({ exitAfter: true, convertAfter: false });
+	};
+
+	const handleSaveAndConvert = async () => {
+		await saveIntake({ convertAfter: true });
 	};
 
 	const handleClear = () => {
@@ -291,7 +325,7 @@ export default function ClientIntake() {
 					</div>
 				</section>
 
-				{/* Contact details */}
+				{/* Primary contact */}
 				<section className="space-y-4">
 					<div>
 						<h2 className="text-sm font-semibold text-yecny-charcoal">
@@ -301,7 +335,6 @@ export default function ClientIntake() {
 							Who should Yecny reach out to with questions?
 						</p>
 					</div>
-
 					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
@@ -387,7 +420,6 @@ export default function ClientIntake() {
 								Client already has QuickBooks Online
 							</label>
 						</div>
-
 						<div className="flex items-center gap-2 mt-6">
 							<input
 								id="allow_login_access"
@@ -406,6 +438,7 @@ export default function ClientIntake() {
 						</div>
 					</div>
 				</section>
+
 				{/* Banking & accounts */}
 				<section className="space-y-4">
 					<div>
@@ -459,7 +492,6 @@ export default function ClientIntake() {
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
 						</div>
-
 						<div className="md:col-span-2">
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
 								Savings banks
@@ -546,7 +578,6 @@ export default function ClientIntake() {
 						</div>
 					</div>
 				</section>
-
 				{/* Transaction behavior */}
 				<section className="space-y-4">
 					<div>
@@ -626,7 +657,6 @@ export default function ClientIntake() {
 							How often they want reports and how payroll is handled.
 						</p>
 					</div>
-
 					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
@@ -721,6 +751,16 @@ export default function ClientIntake() {
 						>
 							{saving ? "Saving..." : "Save & exit"}
 						</button>
+
+						<button
+							type="button"
+							onClick={handleSaveAndConvert}
+							disabled={saving}
+							className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+						>
+							{saving ? "Converting..." : "Save & convert to client"}
+						</button>
+
 						<button
 							type="submit"
 							disabled={saving}
