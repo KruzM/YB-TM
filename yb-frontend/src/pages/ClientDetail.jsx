@@ -21,6 +21,7 @@ export default function ClientDetail() {
 
 	const [client, setClient] = useState(null);
 	const [users, setUsers] = useState([]);
+	const [contacts, setContacts] = useState([]);
 	const [activeTab, setActiveTab] = useState("Profile");
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
@@ -29,12 +30,14 @@ export default function ClientDetail() {
 		setLoading(true);
 		setError("");
 		try {
-			const [clientRes, usersRes] = await Promise.all([
+			const [clientRes, usersRes, contactsRes] = await Promise.all([
 				api.get(`/clients/${id}`),
 				api.get("/users"),
+				api.get("/contacts"),
 			]);
 			setClient(clientRes.data);
 			setUsers(usersRes.data);
+			setContacts(contactsRes.data);
 		} catch (err) {
 			console.error(err);
 			setError("Failed to load client");
@@ -86,12 +89,25 @@ export default function ClientDetail() {
 					onClick={() => navigate("/clients")}
 					className="text-sm text-yecny-primary hover:underline"
 				>
-					� Back to Clients
+					X Back to Clients
 				</button>
 			</div>
 		);
 	}
+	const handlePrimaryContactChange = async (newContactId) => {
+		if (!client) return;
 
+		try {
+			const res = await api.put(`/clients/${client.id}`, {
+				primary_contact_id: newContactId,
+			});
+
+			setClient(res.data);
+		} catch (err) {
+			console.error("Failed to update primary contact", err);
+			// optional: setError("Failed to update primary contact");
+		}
+	};
 	return (
 		<div className="space-y-5">
 			{/* Breadcrumb / header row */}
@@ -154,7 +170,13 @@ export default function ClientDetail() {
 
 			{/* Tab content */}
 			{activeTab === "Profile" && (
-				<ProfileTab client={client} manager={manager} bookkeeper={bookkeeper} />
+				<ProfileTab
+					client={client}
+					manager={manager}
+					bookkeeper={bookkeeper}
+					contacts={contacts}
+					onPrimaryContactChange={handlePrimaryContactChange}
+				/>
 			)}
 
 			{activeTab === "Accounts" && <AccountsTab clientId={client.id} />}
@@ -189,7 +211,35 @@ function Badge({ children }) {
 	);
 }
 
-function ProfileTab({ client, manager, bookkeeper }) {
+function ProfileTab({
+	client,
+	manager,
+	bookkeeper,
+	contacts = [],
+	onPrimaryContactChange,
+}) {
+	const [editingPrimary, setEditingPrimary] = useState(false);
+	const [selectedContactId, setSelectedContactId] = useState(
+		client.primary_contact_id ?? ""
+	);
+
+	// Keep local selection in sync when client updates from server
+	useEffect(() => {
+		setSelectedContactId(client.primary_contact_id ?? "");
+	}, [client.primary_contact_id]);
+
+	const handleSavePrimary = () => {
+		const idToSend =
+			selectedContactId === "" || selectedContactId === null
+				? null
+				: Number(selectedContactId);
+
+		if (onPrimaryContactChange) {
+			onPrimaryContactChange(idToSend);
+		}
+		setEditingPrimary(false);
+	};
+
 	return (
 		<div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
 			<div className="space-y-4">
@@ -207,9 +257,59 @@ function ProfileTab({ client, manager, bookkeeper }) {
 				/>
 				<FieldDisplay label="Tier" value={client.tier} transform={capitalize} />
 			</div>
-
 			<div className="space-y-4">
-				<FieldDisplay label="Primary Contact" value={client.primary_contact} />
+				{/* Primary Contact with inline editor */}
+				<div>
+					<div className="flex items-center justify-between gap-2">
+						<div>
+							<div className="text-xs font-medium text-yecny-slate mb-0.5">
+								Primary Contact
+							</div>
+							{client.primary_contact ? (
+								<div className="text-sm text-yecny-charcoal">
+									{client.primary_contact}
+								</div>
+							) : (
+								<div className="text-xs text-slate-400">Not set</div>
+							)}
+						</div>
+
+						<button
+							type="button"
+							onClick={() => setEditingPrimary((v) => !v)}
+							className="text-xs px-2 py-1 rounded border border-slate-200 text-yecny-primary hover:bg-slate-50"
+						>
+							{editingPrimary ? "Cancel" : "Change"}
+						</button>
+					</div>
+
+					{editingPrimary && (
+						<div className="mt-2 flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+							<select
+								className="border border-slate-300 rounded px-2 py-1 text-sm min-w-[220px]"
+								value={selectedContactId ?? ""}
+								onChange={(e) => setSelectedContactId(e.target.value)}
+							>
+								<option value="">No contact</option>
+								{contacts.map((c) => (
+									<option key={c.id} value={c.id}>
+										{c.name}
+										{c.email ? ` (${c.email})` : ""}
+									</option>
+								))}
+							</select>
+
+							<button
+								type="button"
+								onClick={handleSavePrimary}
+								className="text-xs px-3 py-1 rounded bg-yecny-primary text-white hover:bg-teal-700"
+							>
+								Save
+							</button>
+						</div>
+					)}
+				</div>
+
 				<FieldDisplay label="Email" value={client.email} />
 				<FieldDisplay label="Phone" value={client.phone} />
 				<FieldDisplay label="CPA" value={client.cpa} />

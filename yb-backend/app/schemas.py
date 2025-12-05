@@ -185,8 +185,21 @@ class ClientCreate(ClientBase):
     pass
 
 
-class ClientUpdate(ClientBase):
-    pass
+class ClientUpdate(BaseModel):
+    legal_name: Optional[str] = None
+    dba_name: Optional[str] = None
+    tier: Optional[str] = None
+    billing_frequency: Optional[str] = None
+    bookkeeping_frequency: Optional[str] = None
+
+    primary_contact: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    cpa: Optional[str] = None
+
+    manager_id: Optional[int] = None
+    bookkeeper_id: Optional[int] = None
+    primary_contact_id: Optional[int] = None
 
 
 class ClientOut(ClientBase):

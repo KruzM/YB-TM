@@ -148,12 +148,46 @@ async def update_client(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    for field, value in client_in.dict(exclude_unset=True).items():
+    # Work on a mutable dict of just the fields that were actually sent
+    data = client_in.dict(exclude_unset=True)
+
+    # Special handling: if primary_contact_id is provided, validate it and
+    # (optionally) sync name / email / phone from the Contact record.
+    if "primary_contact_id" in data and data["primary_contact_id"] is not None:
+        contact_id = data["primary_contact_id"]
+
+        contact = (
+            db.query(models.Contact)
+            .filter(models.Contact.id == contact_id)
+            .first()
+        )
+        if not contact:
+            raise HTTPException(status_code=400, detail="Primary contact not found")
+
+        # Always set the FK
+        client.primary_contact_id = contact.id
+
+        # Only overwrite these if the caller did NOT explicitly send them
+        if "primary_contact" not in data:
+            client.primary_contact = contact.name
+
+        if "email" not in data and contact.email:
+            client.email = contact.email
+
+        if "phone" not in data and contact.phone:
+            client.phone = contact.phone
+
+        # We've already consumed primary_contact_id
+        data.pop("primary_contact_id", None)
+
+    # Apply all remaining fields normally
+    for field, value in data.items():
         setattr(client, field, value)
 
     db.commit()
     db.refresh(client)
     return client
+
 @router.get(
     "/{client_id}/onboarding-tasks",
     response_model=List[schemas.TaskOut],
