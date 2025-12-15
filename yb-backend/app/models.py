@@ -86,6 +86,14 @@ class Client(Base):
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     bookkeeper_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
+
+    notes = relationship(
+        "ClientNote",
+        back_populates="client",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
     #link to a Contact record for primary contact
     primary_contact_id = Column(
         Integer,
@@ -141,17 +149,21 @@ class ClientPurgeRequest(Base):
     client = relationship("Client")
     requested_by = relationship("User", foreign_keys=[requested_by_id])
     approved_by = relationship("User", foreign_keys=[approved_by_id])
-    
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
 
     client_id = Column(Integer, ForeignKey("clients.id"), index=True, nullable=False)
-    account_id = Column(Integer, ForeignKey("accounts.id"), index=True, nullable=False)
 
-    # "statement", "tax", etc. - for now we just use "statement"
+    # NOW nullable so general docs can be client-level (no specific account)
+    account_id = Column(Integer, ForeignKey("accounts.id"), index=True, nullable=True)
+
+    # "statement", "document", "tax", etc.
     doc_type = Column(String, nullable=False, default="statement")
+
+    # Optional logical folder (Tax, Legal, Payroll, etc.)
+    folder = Column(String, nullable=True)
 
     year = Column(Integer, nullable=False)
     month = Column(Integer, nullable=False)
@@ -163,7 +175,7 @@ class Document(Base):
 
     uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
+
 class ClientIntake(Base):
     __tablename__ = "client_intake"
 
@@ -184,10 +196,32 @@ class ClientIntake(Base):
     primary_contact_email = Column(String, nullable=True)
     primary_contact_phone = Column(String, nullable=True)
 
+    #contact links
+    primary_contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=True,
+        index=True,
+    )
+    cpa_contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=True,
+        index=True,
+    )
+
     # Bookkeeping / access
     bookkeeping_start_date = Column(Date, nullable=True)
     qbo_exists = Column(Boolean, default=False)
     allow_login_access = Column(Boolean, default=True)
+
+    # 'yes', 'no', or 'unsure'
+    qbo_status = Column(String, nullable=True)
+    qbo_num_users = Column(Integer, nullable=True)
+    qbo_needs_class_tracking = Column(Boolean, default=False, nullable=False)
+    qbo_needs_location_tracking = Column(Boolean, default=False, nullable=False)
+    # 'simple_start', 'essentials', 'plus', 'advanced'
+    qbo_recommended_subscription = Column(String, nullable=True)
 
     # Banking / accounts
     num_checking = Column(Integer, nullable=True)
@@ -211,9 +245,33 @@ class ClientIntake(Base):
     income_tracking = Column(Text, nullable=True)
     payroll_provider = Column(String, nullable=True)
 
+    # Payroll services requested
+    payroll_needs_setup = Column(Boolean, default=False, nullable=False)
+    payroll_process_regular = Column(Boolean, default=False, nullable=False)
+    payroll_corrections_adjustments = Column(Boolean, default=False, nullable=False)
+    payroll_quarterly_filings = Column(Boolean, default=False, nullable=False)
+    payroll_state_local_payments = Column(Boolean, default=False, nullable=False)
+    payroll_calculate_hours_commission = Column(Boolean, default=False, nullable=False)
+
     # Misc
     additional_notes = Column(Text, nullable=True)
-
+    
+    # Relationships to Contact rows
+    primary_contact_contact = relationship(
+        "Contact",
+        foreign_keys=[primary_contact_id],
+        lazy="joined",
+    )
+    cpa_contact_contact = relationship(
+        "Contact",
+        foreign_keys=[cpa_contact_id],
+        lazy="joined",
+    )
+    owners_contacts = relationship(
+        "Contact",
+        secondary="intake_owners",
+        lazy="joined",
+    )
     # Audit
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_by = relationship("User", lazy="joined")
@@ -225,6 +283,39 @@ class ClientIntake(Base):
   # If converted to client, link to client record
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
     converted_at = Column(DateTime, nullable=True)
+
+
+class ClientNote(Base):
+    __tablename__ = "client_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    client_id = Column(Integer, ForeignKey("clients.id"), index=True, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    body = Column(Text, nullable=False)
+    pinned = Column(Boolean, default=False, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    client = relationship("Client", back_populates="notes")
+    created_by = relationship("User", lazy="joined")
+
+
+class IntakeOwner(Base):
+    __tablename__ = "intake_owners"
+
+    intake_id = Column(Integer, ForeignKey("client_intake.id"), primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id"), primary_key=True)
+
+    intake = relationship("ClientIntake", backref="intake_owner_links")
+    contact = relationship("Contact")
 
 class RecurringTask(Base):
     __tablename__ = "recurring_tasks"

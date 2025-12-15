@@ -80,15 +80,21 @@ async def update_task(
     Update a task. Commonly used to change status or due_date.
     """
     task = (
-        db.query(models.Task)
-        .filter(
-            models.Task.id == task_id,
-            models.Task.assigned_user_id == current_user.id,
-        )
-        .first()
-    )
+    db.query(models.Task)
+    .filter(models.Task.id == task_id)
+    .first()
+)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+
+    if (
+        task.assigned_user_id is not None
+        and task.assigned_user_id != current_user.id
+        and current_user.role not in ("Admin", "Owner")
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to modify this task")
+
 
     if task_in.title is not None:
         task.title = task_in.title

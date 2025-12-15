@@ -86,6 +86,7 @@ export default function ClientIntakeList() {
 					</button>
 				</div>
 			</div>
+
 			{/* Search */}
 			<form
 				onSubmit={handleSearchSubmit}
@@ -163,7 +164,9 @@ export default function ClientIntakeList() {
 									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
 										Linked client
 									</th>
-									<th className="px-4 py-2" />
+									<th className="px-4 py-2 text-right font-medium text-yecny-slate">
+										Actions
+									</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -209,29 +212,42 @@ export default function ClientIntakeList() {
 											</td>
 											<td className="px-4 py-2 text-xs">
 												{i.client_id ? (
-													<Link
-														to={`/clients/${i.client_id}`}
-														className="text-yecny-primary hover:underline"
-													>
-														View client
-													</Link>
+													<span className="text-emerald-600">Linked</span>
 												) : (
 													<span className="text-slate-400">Not created</span>
 												)}
 											</td>
 											<td className="px-4 py-2 text-right text-xs">
-												{!i.client_id && (
-													<button
-														type="button"
-														onClick={() => handleConvert(i.id)}
-														disabled={convertingId === i.id}
-														className="px-3 py-1.5 rounded-md bg-yecny-primary text-white hover:bg-yecny-primary-dark disabled:opacity-60"
+												<div className="flex justify-end gap-2">
+													{/* View / Edit intake form */}
+													<Link
+														to={`/clients/intake/${i.id}/edit`}
+														className="px-3 py-1.5 rounded-md border border-slate-300 bg-white text-yecny-slate hover:bg-slate-50"
 													>
-														{convertingId === i.id
-															? "Creating..."
-															: "Create client"}
-													</button>
-												)}
+														View / Edit intake
+													</Link>
+
+													{/* Create or view client */}
+													{i.client_id ? (
+														<Link
+															to={`/clients/${i.client_id}`}
+															className="px-3 py-1.5 rounded-md bg-yecny-primary text-white hover:bg-yecny-primary-dark"
+														>
+															View client
+														</Link>
+													) : (
+														<button
+															type="button"
+															onClick={() => handleConvert(i.id)}
+															disabled={convertingId === i.id}
+															className="px-3 py-1.5 rounded-md bg-yecny-primary text-white hover:bg-yecny-primary-dark disabled:opacity-60"
+														>
+															{convertingId === i.id
+																? "Creating..."
+																: "Create client"}
+														</button>
+													)}
+												</div>
 											</td>
 										</tr>
 									);

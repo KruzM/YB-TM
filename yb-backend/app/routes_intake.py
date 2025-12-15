@@ -10,6 +10,7 @@ from .auth import get_current_user
 from datetime import datetime
 from .onboarding import create_onboarding_tasks_for_client
 from .routes_clients import create_default_recurring_tasks_for_client
+
 router = APIRouter(prefix="/intake", tags=["client-intake"])
 
 
@@ -24,12 +25,27 @@ async def create_intake(
 
     This is used when you're on a discovery call / initial meeting with a prospect.
     """
+
+    # Dump everything from the schema
+    data = intake_in.model_dump(exclude_unset=True)
+
+    # Pull out owner_contact_ids so we DON'T try to pass it into ClientIntake(...)
+    owner_ids = data.pop("owner_contact_ids", None) or []
+
+    # Only pass fields that actually exist on ClientIntake
     intake = models.ClientIntake(
-        **intake_in.model_dump(),
+        **data,
         status="new",
         created_by_id=current_user.id if current_user else None,
     )
+
     db.add(intake)
+    db.flush()  # so intake.id is available
+
+    # Create IntakeOwner link rows if provided
+    for cid in owner_ids:
+        db.add(models.IntakeOwner(intake_id=intake.id, contact_id=int(cid)))
+
     db.commit()
     db.refresh(intake)
     return intake
@@ -92,10 +108,15 @@ async def update_intake(
     Full/partial update for an intake record.
     Use this to change status, tweak answers, etc.
     """
-    intake = db.query(models.ClientIntake).filter(models.ClientIntake.id == intake_id).first()
+    intake = (
+        db.query(models.ClientIntake)
+        .filter(models.ClientIntake.id == intake_id)
+        .first()
+    )
     if not intake:
         raise HTTPException(status_code=404, detail="Intake not found")
 
+    # Apply any fields that were sent
     update_data = intake_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(intake, field, value)
@@ -103,6 +124,7 @@ async def update_intake(
     db.commit()
     db.refresh(intake)
     return intake
+
 
 
 @router.delete("/{intake_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -122,6 +144,8 @@ async def delete_intake(
     db.delete(intake)
     db.commit()
     return None
+
+
 # Helper: safely turn a value into an int or None
 def _to_int_or_none(value):
     if value is None:
@@ -146,15 +170,12 @@ def create_accounts_from_intake(db, client, intake):
       - num_savings + savings_banks
       - num_credit_cards + credit_card_banks
     """
-    # You may need to import models at top: from . import models
-
     # ---- Checking accounts ----
     num_checking = _to_int_or_none(getattr(intake, "num_checking", None)) or 0
     checking_banks_str = getattr(intake, "checking_banks", "") or ""
     checking_banks = [b.strip() for b in checking_banks_str.split(",") if b.strip()]
 
     for i in range(num_checking):
-        # Use the i-th bank if available, otherwise fall back to last specified
         bank_name = (
             checking_banks[i]
             if i < len(checking_banks)
@@ -192,7 +213,6 @@ def create_accounts_from_intake(db, client, intake):
             is_active=True,
         )
         db.add(account)
-
     # ---- Credit card accounts ----
     num_cards = _to_int_or_none(getattr(intake, "num_credit_cards", None)) or 0
     cc_banks_str = getattr(intake, "credit_card_banks", "") or ""
@@ -215,6 +235,7 @@ def create_accounts_from_intake(db, client, intake):
         )
         db.add(account)
         # -- Loans, Vehicles, Etc could be added similarly --
+
 
 def create_contacts_from_intake(
     db: Session,
@@ -257,32 +278,40 @@ def create_contacts_from_intake(
     primary_phone = getattr(intake, "primary_contact_phone", None)
 
     primary_contact = None
-    if primary_name:
-        query = db.query(models.Contact).filter(
-            models.Contact.name == primary_name,
+   # If intake already has primary_contact_id, just link it
+    if getattr(intake, "primary_contact_id", None):
+        primary_contact = (
+            db.query(models.Contact)
+            .filter(models.Contact.id == intake.primary_contact_id)
+            .first()
         )
-        if primary_email:
-            query = query.filter(models.Contact.email == primary_email)
-
-        primary_contact = query.first()
-
-        if not primary_contact:
-            primary_contact = models.Contact(
-                name=primary_name,
-                email=primary_email,
-                phone=primary_phone,
-                type="individual",
-                is_client=False,
-                notes=None,
+    else:
+        # existing logic using name/email/phone
+        if primary_name:
+            query = db.query(models.Contact).filter(
+                models.Contact.name == primary_name,
             )
-            db.add(primary_contact)
-            db.flush()
+            if primary_email:
+                query = query.filter(models.Contact.email == primary_email)
 
-    # Link client to primary contact (if we have one)
+            primary_contact = query.first()
+
+            if not primary_contact:
+                primary_contact = models.Contact(
+                    name=primary_name,
+                    email=primary_email,
+                    phone=primary_phone,
+                    type="individual",
+                    is_client=False,
+                    notes=None,
+                )
+                db.add(primary_contact)
+                db.flush()
+
     if primary_contact:
         client.primary_contact_id = primary_contact.id
-
     # We don't commit here; caller will commit once after all setup.
+
 
 @router.post("/{intake_id}/convert-to-client", response_model=schemas.ClientOut)
 async def convert_intake_to_client(
@@ -332,7 +361,6 @@ async def convert_intake_to_client(
         manager_id=None,
         bookkeeper_id=None,
     )
-
     db.add(client)
     db.flush()  # so client.id is available
 
@@ -342,7 +370,7 @@ async def convert_intake_to_client(
     # create Accounts based on intake answers
     create_accounts_from_intake(db, client, intake)
 
-    # Also create default recurring rules/tasks (if you already had this helper)
+    # Also create default recurring rules/tasks
     create_default_recurring_tasks_for_client(db, client, current_user)
     
     # Create onboarding tasks for the new client
@@ -351,6 +379,7 @@ async def convert_intake_to_client(
         client=client,
         created_by_user_id=current_user.id,
     )
+
     # Link intake -> client and mark as converted
     if hasattr(intake, "client_id"):
         intake.client_id = client.id

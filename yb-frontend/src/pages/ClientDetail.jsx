@@ -4,11 +4,14 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import ClientDangerZone from "../components/clients/ClientDangerZone";
+import ClientNotesPanel from "../components/clients/ClientNote";
 
 const TABS = [
 	"Profile",
 	"Accounts",
+	"Statements",
 	"Documents",
+	"Onboarding",
 	"Recurring",
 	"Notes",
 	"Danger Zone",
@@ -181,24 +184,23 @@ export default function ClientDetail() {
 
 			{activeTab === "Accounts" && <AccountsTab clientId={client.id} />}
 
+			{activeTab === "Statements" && <StatementsTab client={client} />}
+
 			{activeTab === "Documents" && <DocumentsTab client={client} />}
+
+			{activeTab === "Onboarding" && (
+				<OnboardingTab clientId={client.id} users={users} />
+			)}
 
 			{activeTab === "Recurring" && (
 				<RecurringTab client={client} users={users} />
 			)}
 
-			{activeTab === "Notes" && (
-				<PlaceholderTab title="Notes & Activity">
-					We&apos;ll track internal notes and activity logs for this client
-					here.
-				</PlaceholderTab>
-			)}
+			{activeTab === "Notes" && <ClientNotesPanel clientId={client.id} />}
 
 			{activeTab === "Danger Zone" && (
 				<ClientDangerZone clientId={client.id} clientName={client.legal_name} />
 			)}
-
-			{/* ...rest of file: Badge, ProfileTab, AccountsTab, DocumentsTab, etc. */}
 		</div>
 	);
 }
@@ -676,13 +678,17 @@ function AccountsTab({ clientId }) {
 		</div>
 	);
 }
-function DocumentsTab({ client }) {
+
+function StatementsTab({ client }) {
 	const { user } = useAuth();
 	const [accounts, setAccounts] = useState([]);
 	const [documents, setDocuments] = useState([]);
 	const [year, setYear] = useState(new Date().getFullYear());
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
+
+	// NEW: statement date the user picks (YYYY-MM-DD)
+	const [statementDate, setStatementDate] = useState("");
 
 	const [modalOpen, setModalOpen] = useState(false);
 	const [uploadMonth, setUploadMonth] = useState(1);
@@ -701,7 +707,11 @@ function DocumentsTab({ client }) {
 			const [accountsRes, docsRes] = await Promise.all([
 				api.get("/accounts", { params: { client_id: clientId } }),
 				api.get("/documents", {
-					params: { client_id: clientId, year: targetYear },
+					params: {
+						client_id: clientId,
+						year: targetYear,
+						doc_type: "statement", // <- only statements
+					},
 				}),
 			]);
 
@@ -730,6 +740,12 @@ function DocumentsTab({ client }) {
 		setUploadAccountId(accountId);
 		setUploadMonth(month);
 		setUploadFile(null);
+
+		// default statement date: last day of that month in selected year
+		const lastDay = new Date(year, month, 0); // day 0 of next month
+		const iso = lastDay.toISOString().slice(0, 10); // "YYYY-MM-DD"
+		setStatementDate(iso);
+
 		setModalOpen(true);
 	};
 
@@ -737,24 +753,20 @@ function DocumentsTab({ client }) {
 		setModalOpen(false);
 		setUploading(false);
 	};
-
 	const handleFileChange = (e) => {
 		setUploadFile(e.target.files?.[0] ?? null);
 	};
 
 	const handleUpload = async (e) => {
 		e.preventDefault();
-		if (!uploadFile || !uploadAccountId) return;
+		if (!uploadFile || !uploadAccountId || !statementDate) return;
 
 		setUploading(true);
 		try {
 			const formData = new FormData();
 			formData.append("client_id", String(clientId));
 			formData.append("account_id", String(uploadAccountId));
-			formData.append("year", String(year));
-			formData.append("month", String(uploadMonth));
-			// You can optionally let the user pick a specific day later
-			formData.append("day", "1");
+			formData.append("statement_date", statementDate); // <- single date
 			formData.append("file", uploadFile);
 
 			await api.post("/documents/upload", formData, {
@@ -768,6 +780,7 @@ function DocumentsTab({ client }) {
 			setUploading(false);
 		}
 	};
+
 	const handleDeleteDoc = async (doc) => {
 		if (
 			!window.confirm(
@@ -785,6 +798,7 @@ function DocumentsTab({ client }) {
 			alert("Failed to delete document");
 		}
 	};
+
 	// Build a quick lookup: account_id -> month -> document
 	const docsByAccount = {};
 	for (const doc of documents) {
@@ -924,7 +938,6 @@ function DocumentsTab({ client }) {
 					</div>
 				)}
 			</div>
-
 			{/* Upload modal */}
 			{modalOpen && (
 				<div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
@@ -983,6 +996,368 @@ function DocumentsTab({ client }) {
 
 							<div>
 								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Statement date
+								</label>
+								<input
+									type="date"
+									value={statementDate}
+									onChange={(e) => setStatementDate(e.target.value)}
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+									required
+								/>
+								<p className="mt-1 text-[11px] text-slate-500">
+									Use the actual date on the statement (usually the period end
+									date). This is used to generate the MMDDYY file name.
+								</p>
+							</div>
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									File
+								</label>
+								<input
+									type="file"
+									onChange={handleFileChange}
+									className="w-full text-sm"
+									required
+								/>
+							</div>
+
+							<div className="pt-2 border-t border-slate-200 flex justify-end gap-2">
+								<button
+									type="button"
+									onClick={closeModal}
+									className="px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-yecny-slate hover:bg-slate-50"
+								>
+									Cancel
+								</button>
+								<button
+									type="submit"
+									disabled={uploading || !uploadFile}
+									className="px-4 py-2 rounded-md bg-yecny-primary text-white text-sm font-medium hover:bg-yecny-primary-dark disabled:opacity-60"
+								>
+									{uploading ? "Uploading..." : "Upload"}
+								</button>
+							</div>
+						</form>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+function DocumentsTab({ client }) {
+	const { user } = useAuth();
+	const clientId = client.id;
+
+	const [docs, setDocs] = useState([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState("");
+
+	const [modalOpen, setModalOpen] = useState(false);
+	const [uploadFile, setUploadFile] = useState(null);
+	const [documentDate, setDocumentDate] = useState("");
+	const [folder, setFolder] = useState("");
+	const [uploading, setUploading] = useState(false);
+
+	// NEW: search + folder filter
+	const [search, setSearch] = useState("");
+	const [folderFilter, setFolderFilter] = useState("all");
+
+	const loadDocs = async () => {
+		setLoading(true);
+		setError("");
+		try {
+			const res = await api.get("/documents", {
+				params: { client_id: clientId, doc_type: "document" }, // non-statement docs
+			});
+			setDocs(res.data || []);
+		} catch (err) {
+			console.error(err);
+			setError("Failed to load documents");
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	useEffect(() => {
+		loadDocs();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [clientId]);
+
+	const openModal = () => {
+		setUploadFile(null);
+		setFolder("");
+		setDocumentDate(new Date().toISOString().slice(0, 10));
+		setModalOpen(true);
+	};
+
+	const closeModal = () => {
+		setModalOpen(false);
+		setUploading(false);
+	};
+
+	const handleFileChange = (e) => {
+		setUploadFile(e.target.files?.[0] ?? null);
+	};
+
+	const handleUpload = async (e) => {
+		e.preventDefault();
+		if (!uploadFile || !documentDate) return;
+		setUploading(true);
+		try {
+			const formData = new FormData();
+			formData.append("client_id", String(clientId));
+			formData.append("document_date", documentDate);
+			if (folder.trim()) {
+				formData.append("folder", folder.trim());
+			}
+			formData.append("file", uploadFile);
+			await api.post("/documents/upload-general", formData, {
+				headers: { "Content-Type": "multipart/form-data" },
+			});
+
+			await loadDocs();
+			closeModal();
+		} catch (err) {
+			console.error(err);
+			alert("Failed to upload document");
+			setUploading(false);
+		}
+	};
+
+	const handleDownload = (doc) => {
+		const baseURL = api.defaults.baseURL || "";
+		window.open(`${baseURL}/documents/${doc.id}/download`, "_blank");
+	};
+
+	const handleDelete = async (doc) => {
+		if (
+			!window.confirm(
+				"Delete this document? This will remove the file from the server."
+			)
+		) {
+			return;
+		}
+		try {
+			await api.delete(`/documents/${doc.id}`);
+			await loadDocs();
+		} catch (err) {
+			console.error(err);
+			alert("Failed to delete document");
+		}
+	};
+
+	// ----- filtering + search -----
+	const folderOptions = Array.from(
+		new Set(docs.map((d) => d.folder).filter((f) => !!f))
+	).sort();
+
+	const normalizedSearch = search.trim().toLowerCase();
+
+	const visibleDocs = docs.filter((doc) => {
+		// folder filter
+		if (folderFilter !== "all") {
+			if ((doc.folder || "") !== folderFilter) return false;
+		}
+		// text search
+		if (!normalizedSearch) return true;
+		const haystack = `${doc.original_filename} ${
+			doc.folder || ""
+		}`.toLowerCase();
+		return haystack.includes(normalizedSearch);
+	});
+
+	return (
+		<div className="space-y-4">
+			{/* Header + controls */}
+			<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+				<div className="text-sm text-yecny-slate">
+					Store tax returns, legal docs, and other files for this client. Files
+					can be organized into simple folders (Tax, Legal, Payroll, etc.).
+				</div>
+				<div className="flex flex-wrap items-center gap-2">
+					{/* Folder filter */}
+					<select
+						value={folderFilter}
+						onChange={(e) => setFolderFilter(e.target.value)}
+						className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white"
+					>
+						<option value="all">All folders</option>
+						{folderOptions.map((f) => (
+							<option key={f} value={f}>
+								{f}
+							</option>
+						))}
+					</select>
+					{/* Search box */}
+					<input
+						type="text"
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+						placeholder="Search by name or folder..."
+						className="border border-slate-300 rounded-md px-2 py-1.5 text-xs min-w-[160px]"
+					/>
+
+					<button
+						onClick={openModal}
+						className="px-3 py-1.5 rounded-md bg-yecny-primary text-white text-xs font-medium hover:bg-yecny-primary-dark"
+					>
+						+ Upload Document
+					</button>
+				</div>
+			</div>
+
+			<div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+				<div className="px-4 py-2 border-b border-slate-200 text-xs text-yecny-slate flex justify-between">
+					<span>
+						{loading
+							? "Loading documents..."
+							: `${visibleDocs.length} of ${docs.length} document${
+									docs.length === 1 ? "" : "s"
+							  }`}
+					</span>
+				</div>
+
+				{error && (
+					<div className="px-4 py-2 text-sm text-red-700 bg-red-50 border-b border-red-100">
+						{error}
+					</div>
+				)}
+
+				{!loading && visibleDocs.length === 0 && !error && (
+					<div className="px-4 py-6 text-sm text-yecny-slate">
+						No documents match your filters. Try clearing the search or folder
+						filter.
+					</div>
+				)}
+
+				{!loading && visibleDocs.length > 0 && (
+					<div className="overflow-x-auto">
+						<table className="min-w-full text-sm">
+							<thead className="bg-slate-50">
+								<tr>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Name
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Folder
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Date
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Uploaded
+									</th>
+									<th className="text-right px-4 py-2 font-medium text-yecny-slate">
+										Actions
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{visibleDocs.map((doc, idx) => {
+									const isLast = idx === visibleDocs.length - 1;
+									const docDate =
+										doc.day && doc.month && doc.year
+											? new Date(doc.year, doc.month - 1, doc.day)
+													.toISOString()
+													.slice(0, 10)
+											: "";
+
+									return (
+										<tr
+											key={doc.id}
+											className={
+												"hover:bg-slate-50 transition-colors" +
+												(isLast ? "" : " border-b border-slate-100")
+											}
+										>
+											<td className="px-4 py-2">{doc.original_filename}</td>
+											<td className="px-4 py-2">
+												{doc.folder || (
+													<span className="text-xs text-slate-400">-</span>
+												)}
+											</td>
+											<td className="px-4 py-2">
+												{docDate || (
+													<span className="text-xs text-slate-400">-</span>
+												)}
+											</td>
+											<td className="px-4 py-2 text-xs text-slate-500">
+												{new Date(doc.uploaded_at).toLocaleString()}
+											</td>
+											<td className="px-4 py-2 text-right text-xs">
+												<button
+													type="button"
+													onClick={() => handleDownload(doc)}
+													className="text-yecny-primary hover:underline mr-3"
+												>
+													Open
+												</button>
+												{user?.role === "Admin" && (
+													<button
+														type="button"
+														onClick={() => handleDelete(doc)}
+														className="text-red-600 hover:underline"
+													>
+														Delete
+													</button>
+												)}
+											</td>
+										</tr>
+									);
+								})}
+							</tbody>
+						</table>
+					</div>
+				)}
+			</div>
+
+			{/* Upload modal (unchanged from before, just moved here) */}
+			{modalOpen && (
+				<div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+					<div className="bg-white rounded-xl shadow-lg w-full max-w-md overflow-hidden">
+						<div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+							<h2 className="text-lg font-semibold text-yecny-charcoal">
+								Upload Document
+							</h2>
+							<button
+								onClick={closeModal}
+								className="text-slate-400 hover:text-slate-700 text-xl leading-none"
+							>
+								x
+							</button>
+						</div>
+						<form onSubmit={handleUpload} className="p-5 space-y-4">
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Folder (optional)
+								</label>
+								<input
+									type="text"
+									value={folder}
+									onChange={(e) => setFolder(e.target.value)}
+									placeholder="Tax, Legal, Payroll..."
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+								/>
+							</div>
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Document date
+								</label>
+								<input
+									type="date"
+									value={documentDate}
+									onChange={(e) => setDocumentDate(e.target.value)}
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+									required
+								/>
+								<p className="mt-1 text-[11px] text-slate-500">
+									Used to generate the MMDDYY file name and for sorting.
+								</p>
+							</div>
+
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
 									File
 								</label>
 								<input
@@ -1017,6 +1392,199 @@ function DocumentsTab({ client }) {
 	);
 }
 
+function OnboardingTab({ clientId }) {
+	const { user } = useAuth();
+	const [tasks, setTasks] = useState([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState("");
+
+	const [updatingId, setUpdatingId] = useState(null);
+
+	const loadTasks = async () => {
+		if (!clientId) return;
+		setLoading(true);
+		setError("");
+		try {
+			const res = await api.get(`/client-onboarding/clients/${clientId}/tasks`);
+			setTasks(res.data || []);
+		} catch (err) {
+			console.error(err);
+			setError("Failed to load onboarding tasks.");
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	useEffect(() => {
+		loadTasks();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [clientId]);
+
+	const toggleCompleted = async (task) => {
+		// Adjust these to your real status values
+		const isDone = task.status === "completed";
+		const newStatus = isDone ? "in_progress" : "completed";
+
+		setUpdatingId(task.id);
+		try {
+			// assuming you already have a /tasks/:id update endpoint
+			const res = await api.put(`/tasks/${task.id}`, { status: newStatus });
+			const updated = res.data;
+
+			setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+		} catch (err) {
+			console.error(err);
+			alert("Failed to update task status.");
+		} finally {
+			setUpdatingId(null);
+		}
+	};
+
+	const total = tasks.length;
+	const done = tasks.filter((t) => t.status === "completed").length;
+	return (
+		<div className="space-y-4">
+			{/* Header / summary */}
+			<div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+				<div className="text-sm text-yecny-slate">
+					Onboarding tasks created automatically from your templates. Completing
+					these gets the client fully set up.
+				</div>
+				<div className="text-xs text-yecny-slate">
+					<span className="font-medium">{done}</span> of{" "}
+					<span className="font-medium">{total}</span> completed
+				</div>
+			</div>
+
+			{/* List */}
+			<div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+				<div className="px-4 py-2 border-b border-slate-200 text-xs text-yecny-slate flex justify-between">
+					<span>
+						{loading
+							? "Loading onboarding tasks..."
+							: `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
+					</span>
+				</div>
+
+				{error && (
+					<div className="px-4 py-2 text-sm text-red-700 bg-red-50 border-b border-red-100">
+						{error}
+					</div>
+				)}
+
+				{!loading && tasks.length === 0 && !error && (
+					<div className="px-4 py-6 text-sm text-yecny-slate">
+						No onboarding tasks found for this client. Check your onboarding
+						templates or task auto-creation.
+					</div>
+				)}
+
+				{!loading && tasks.length > 0 && (
+					<div className="overflow-x-auto">
+						<table className="min-w-full text-sm">
+							<thead className="bg-slate-50">
+								<tr>
+									<th className="w-10 px-4 py-2"></th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Task
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Due
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Assigned
+									</th>
+									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+										Status
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{tasks.map((task, idx) => {
+									const isLast = idx === tasks.length - 1;
+
+									// tweak field names to match your TaskOut:
+									const title = task.title || task.name;
+									const due = task.due_date
+										? new Date(task.due_date).toLocaleDateString()
+										: "";
+									const assigned =
+										task.assigned_user_name || task.assigned_to_name || "";
+									const isCompleted = task.status === "completed";
+
+									return (
+										<tr
+											key={task.id}
+											className={
+												"hover:bg-slate-50 transition-colors" +
+												(isLast ? "" : " border-b border-slate-100")
+											}
+										>
+											<td className="px-4 py-2 align-top">
+												<button
+													type="button"
+													onClick={() => toggleCompleted(task)}
+													disabled={updatingId === task.id}
+													className="mt-0.5"
+												>
+													<input
+														type="checkbox"
+														checked={isCompleted}
+														onChange={() => {}}
+														readOnly
+													/>
+												</button>
+											</td>
+											<td className="px-4 py-2 align-top">
+												<div
+													className={[
+														"text-sm",
+														isCompleted
+															? "text-slate-500 line-through"
+															: "text-yecny-charcoal",
+													].join(" ")}
+												>
+													{title}
+												</div>
+												{task.description && (
+													<div className="mt-0.5 text-xs text-slate-500">
+														{task.description}
+													</div>
+												)}
+											</td>
+											<td className="px-4 py-2 align-top text-xs text-slate-600">
+												{due || <span className="text-slate-400">-</span>}
+											</td>
+											<td className="px-4 py-2 align-top text-xs text-slate-600">
+												{assigned || (
+													<span className="text-slate-400">Unassigned</span>
+												)}
+											</td>
+											<td className="px-4 py-2 align-top text-xs">
+												<span
+													className={[
+														"inline-flex items-center px-2 py-0.5 rounded-full border",
+														isCompleted
+															? "border-green-200 bg-green-50 text-green-700"
+															: task.status === "in_progress"
+															? "border-amber-200 bg-amber-50 text-amber-700"
+															: "border-slate-200 bg-slate-50 text-slate-600",
+													].join(" ")}
+												>
+													{task.status || "new"}
+												</span>
+											</td>
+										</tr>
+									);
+								})}
+							</tbody>
+						</table>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
 const SCHEDULE_TYPES = [
 	{ value: "monthly", label: "Monthly" },
 	{ value: "quarterly", label: "Quarterly" },

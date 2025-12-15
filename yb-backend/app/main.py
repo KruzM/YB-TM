@@ -15,8 +15,10 @@ from . import (
     routes_onboarding,
     routes_contacts,
 )
+from .routes_client_notes import router as client_notes_router
+from .routes_clientOnboarding import router as client_onboarding_router
 
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Yecny Bookkeeping OS API")
 
@@ -45,6 +47,8 @@ app.include_router(routes_recurring.router, prefix="/api")
 app.include_router(routes_intake.router, prefix="/api")
 app.include_router(routes_onboarding.router, prefix="/api")
 app.include_router(routes_contacts.router, prefix="/api") 
+app.include_router(client_notes_router, prefix="/api")
+app.include_router(client_onboarding_router, prefix="/api")
 
 @app.get("/api/health")
 async def health():

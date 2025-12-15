@@ -2,11 +2,19 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import date
+from datetime import date, timedelta, datetime
 
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user,require_admin, require_owner
+from .onboarding import create_onboarding_tasks_for_client as create_onboarding_tasks_helper
+
+from .models import (
+    Client,
+    Task,
+    OnboardingTemplateTask,
+    User,
+)
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -120,11 +128,17 @@ async def create_client(
     db.commit()
     db.refresh(new_client)
 
+    # 1) Create the default recurring rules + first tasks (unchanged for now)
     create_default_recurring_tasks_for_client(db, new_client, current_user)
 
+    # 2) Create onboarding tasks from templates (Admin/Manager, etc.)
+    create_onboarding_tasks_helper(
+        db=db,
+        client=new_client,
+        created_by_user_id=current_user.id,
+    )
+
     return new_client
-
-
 @router.get("/{client_id}", response_model=schemas.ClientOut)
 async def get_client(
     client_id: int,
@@ -310,7 +324,7 @@ def approve_and_execute_client_purge(
             detail="The owner approving the purge must be a different user than the requester.",
         )
 
-    # Perform the purge � delete related records first, then the client
+    # Perform the purge -> delete related records first, then the client
     db.query(models.Task).filter(models.Task.client_id == client_id).delete()
     db.query(models.Account).filter(models.Account.client_id == client_id).delete()
     db.query(models.Document).filter(models.Document.client_id == client_id).delete()
@@ -327,3 +341,4 @@ def approve_and_execute_client_purge(
     db.commit()
 
     return {"message": "Client and related data purged successfully."}
+

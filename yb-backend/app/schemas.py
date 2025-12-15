@@ -210,6 +210,33 @@ class ClientOut(ClientBase):
     class Config:
         from_attributes = True
         
+
+class ClientNoteBase(BaseModel):
+    body: str
+    pinned: bool | None = False
+
+
+class ClientNoteCreate(ClientNoteBase):
+    pass
+
+
+class ClientNoteUpdate(BaseModel):
+    body: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+class ClientNoteOut(ClientNoteBase):
+    id: int
+    client_id: int
+    created_by_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    created_by_name: Optional[str] = None
+    class Config:
+		# or orm_mode 
+        from_attributes = True
+
+    
 # ---------- Client Intake ----------
 class ClientIntakeBase(BaseModel):
     # Basic business info
@@ -224,10 +251,24 @@ class ClientIntakeBase(BaseModel):
     primary_contact_email: Optional[EmailStr] = None
     primary_contact_phone: Optional[str] = None
 
+    # Link to Contact records
+    primary_contact_id: Optional[int] = None
+    cpa_contact_id: Optional[int] = None
+
+    # Owner Contacts
+    owner_contact_ids: Optional[List[int]] = None
+
     # Bookkeeping / access
     bookkeeping_start_date: Optional[date] = None
     qbo_exists: Optional[bool] = None
     allow_login_access: Optional[bool] = None
+
+    # Richer QBO planning fields
+    qbo_status: Optional[str] = None                    # 'yes', 'no', 'unsure'
+    qbo_num_users: Optional[int] = None
+    qbo_needs_class_tracking: Optional[bool] = None
+    qbo_needs_location_tracking: Optional[bool] = None
+    qbo_recommended_subscription: Optional[str] = None  # 'simple_start','essentials','plus','advanced'
 
     # Banking / accounts
     num_checking: Optional[int] = None
@@ -250,7 +291,14 @@ class ClientIntakeBase(BaseModel):
     report_frequency: Optional[str] = None
     income_tracking: Optional[str] = None
     payroll_provider: Optional[str] = None
-
+    
+    # Payroll services requested
+    payroll_needs_setup: Optional[bool] = None
+    payroll_process_regular: Optional[bool] = None
+    payroll_corrections_adjustments: Optional[bool] = None
+    payroll_quarterly_filings: Optional[bool] = None
+    payroll_state_local_payments: Optional[bool] = None
+    payroll_calculate_hours_commission: Optional[bool] = None
     # Misc
     additional_notes: Optional[str] = None
 
@@ -274,9 +322,19 @@ class ClientIntakeUpdate(BaseModel):
     primary_contact_email: Optional[EmailStr] = None
     primary_contact_phone: Optional[str] = None
 
+    primary_contact_id: Optional[int] = None
+    cpa_contact_id: Optional[int] = None
+    owner_contact_ids: Optional[List[int]] = None
+
     bookkeeping_start_date: Optional[date] = None
     qbo_exists: Optional[bool] = None
     allow_login_access: Optional[bool] = None
+
+    qbo_status: Optional[str] = None
+    qbo_num_users: Optional[int] = None
+    qbo_needs_class_tracking: Optional[bool] = None
+    qbo_needs_location_tracking: Optional[bool] = None
+    qbo_recommended_subscription: Optional[str] = None
 
     num_checking: Optional[int] = None
     checking_banks: Optional[str] = None
@@ -297,6 +355,13 @@ class ClientIntakeUpdate(BaseModel):
     income_tracking: Optional[str] = None
     payroll_provider: Optional[str] = None
 
+    payroll_needs_setup: Optional[bool] = None
+    payroll_process_regular: Optional[bool] = None
+    payroll_corrections_adjustments: Optional[bool] = None
+    payroll_quarterly_filings: Optional[bool] = None
+    payroll_state_local_payments: Optional[bool] = None
+    payroll_calculate_hours_commission: Optional[bool] = None
+
     additional_notes: Optional[str] = None
 
 
@@ -306,6 +371,7 @@ class ClientIntakeOut(ClientIntakeBase):
     created_by_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    client_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -340,11 +406,12 @@ class AccountOut(AccountBase):
 # ---------- Document ----------
 class DocumentBase(BaseModel):
     client_id: int
-    account_id: int
+    account_id: Optional[int] = None
     doc_type: str = "statement"
     year: int
     month: int
     day: Optional[int] = None
+    folder: Optional[str] = None
 
 
 class DocumentCreate(DocumentBase):

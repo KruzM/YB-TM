@@ -38,6 +38,10 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 						<Route path="clients/:id" element={<ClientDetail />} />
 						<Route path="clients/intake" element={<ClientIntakeList />} />
 						<Route path="clients/intake/new" element={<ClientIntake />} />
+						<Route
+							path="/clients/intake/:intakeId/edit"
+							element={<ClientIntake />}
+						/>
 						<Route path="settings" element={<SettingsPage />} />
 					</Route>
 

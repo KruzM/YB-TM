@@ -1,6 +1,6 @@
 // src/pages/ClientIntake.jsx
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import api from "../api/client";
 
 const REPORT_FREQ_OPTIONS = [
@@ -9,6 +9,30 @@ const REPORT_FREQ_OPTIONS = [
 	{ value: "quarterly", label: "Quarterly" },
 	{ value: "annual", label: "Annual" },
 ];
+
+const PAYROLL_PROVIDER_OPTIONS = [
+	{ value: "", label: "Select provider" },
+	{ value: "gusto", label: "Gusto" },
+	{ value: "quickbooks_payroll", label: "QuickBooks Payroll" },
+	{ value: "adp", label: "ADP" },
+	{ value: "paychex", label: "Paychex" },
+	{ value: "other", label: "Other / Add new" },
+];
+
+const BANK_OPTIONS = [
+	{ value: "", label: "Select bank" },
+	{ value: "wells_fargo", label: "Wells Fargo" },
+	{ value: "chase", label: "Chase" },
+	{ value: "bank_of_america", label: "Bank of America" },
+	{ value: "capital_one", label: "Capital One" },
+	{ value: "american_express", label: "American Express" },
+	{ value: "other", label: "Other / Add new" },
+];
+
+const getBankLabel = (value) => {
+	const opt = BANK_OPTIONS.find((o) => o.value === value);
+	return opt?.label || "";
+};
 
 const initialFormState = {
 	// Business details
@@ -22,19 +46,29 @@ const initialFormState = {
 	primary_contact_name: "",
 	primary_contact_email: "",
 	primary_contact_phone: "",
+	primary_contact_id: "",
 
 	// Bookkeeping start & access
 	bookkeeping_start_date: "",
-	qbo_exists: false,
+	qbo_status: "",
+	qbo_num_users: "",
+	qbo_needs_class_tracking: false,
+	qbo_needs_location_tracking: false,
 	allow_login_access: true,
 
 	// Banking & accounts
 	num_checking: "",
 	checking_banks: "",
+	checking_banks_other: "",
+
 	num_savings: "",
 	savings_banks: "",
+	savings_banks_other: "",
+
 	num_credit_cards: "",
 	credit_card_banks: "",
+	credit_card_banks_other: "",
+
 	loans: "",
 	vehicles: "",
 	assets: "",
@@ -45,10 +79,24 @@ const initialFormState = {
 	personal_expenses_in_business: false,
 	business_expenses_in_personal: false,
 
+	// Details for those checkboxes
+	non_business_deposits_details: "",
+	personal_expenses_in_business_details: "",
+	business_expenses_in_personal_details: "",
+
 	// Reporting / payroll
 	report_frequency: "",
 	income_tracking: "",
 	payroll_provider: "",
+	payroll_provider_other: "",
+
+	// Payroll services
+	payroll_needs_setup: false,
+	payroll_process_regular: false,
+	payroll_corrections_adjustments: false,
+	payroll_quarterly_filings: false,
+	payroll_state_local_payments: false,
+	payroll_calculate_hours_commission: false,
 
 	// Misc
 	additional_notes: "",
@@ -59,64 +107,494 @@ function toIntOrNull(val) {
 	const n = Number(val);
 	return Number.isNaN(n) ? null : n;
 }
+function computeQboRecommendation(form) {
+	if (form.qbo_status !== "no") return null;
+
+	const numUsers = toIntOrNull(form.qbo_num_users) || 1;
+	const needsClass = !!form.qbo_needs_class_tracking;
+	const needsLocation = !!form.qbo_needs_location_tracking;
+
+	let subscription = "simple_start";
+	if (numUsers > 1) subscription = "essentials";
+	if (needsClass || needsLocation) subscription = "plus";
+	return subscription;
+}
+
+// Helper: map stored string -> {selectValue, otherText}
+function resolveStringToSelectAndOther(stored, options) {
+	const trimmed = (stored || "").trim();
+	if (!trimmed) return { value: "", otherText: "" };
+
+	const match = options.find((opt) => opt.label === trimmed);
+	if (match) return { value: match.value, otherText: "" };
+
+	// Could be multiple banks or a custom name � treat as "other"
+	return { value: "other", otherText: trimmed };
+}
 
 export default function ClientIntake() {
 	const navigate = useNavigate();
+	const { intakeId } = useParams();
+	const isEditing = Boolean(intakeId);
 
 	const [form, setForm] = useState(initialFormState);
 	const [saving, setSaving] = useState(false);
+	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [success, setSuccess] = useState("");
 
+	// Contacts for dropdown
+	const [contacts, setContacts] = useState([]);
+	const [contactsLoading, setContactsLoading] = useState(false);
+	const [contactsError, setContactsError] = useState("");
+
+	// Multiple-bank mode toggles + rows
+	const [checkingMulti, setCheckingMulti] = useState(false);
+	const [checkingRows, setCheckingRows] = useState([{ bank: "", count: 1 }]);
+
+	const [savingsMulti, setSavingsMulti] = useState(false);
+	const [savingsRows, setSavingsRows] = useState([{ bank: "", count: 1 }]);
+
+	const [creditMulti, setCreditMulti] = useState(false);
+	const [creditRows, setCreditRows] = useState([{ bank: "", count: 1 }]);
+
+	const updateCheckingRow = (index, field, value) => {
+		setCheckingRows((rows) =>
+			rows.map((r, i) =>
+				i === index
+					? {
+							...r,
+							[field]: field === "count" ? Number(value) || 0 : value,
+					  }
+					: r
+			)
+		);
+	};
+	const addCheckingRow = () => {
+		setCheckingRows((rows) => [...rows, { bank: "", count: 1 }]);
+	};
+	const removeCheckingRow = (index) => {
+		setCheckingRows((rows) => {
+			if (rows.length === 1) return rows;
+			return rows.filter((_, i) => i !== index);
+		});
+	};
+
+	const updateSavingsRow = (index, field, value) => {
+		setSavingsRows((rows) =>
+			rows.map((r, i) =>
+				i === index
+					? {
+							...r,
+							[field]: field === "count" ? Number(value) || 0 : value,
+					  }
+					: r
+			)
+		);
+	};
+	const addSavingsRow = () => {
+		setSavingsRows((rows) => [...rows, { bank: "", count: 1 }]);
+	};
+	const removeSavingsRow = (index) => {
+		setSavingsRows((rows) => {
+			if (rows.length === 1) return rows;
+			return rows.filter((_, i) => i !== index);
+		});
+	};
+	const updateCreditRow = (index, field, value) => {
+		setCreditRows((rows) =>
+			rows.map((r, i) =>
+				i === index
+					? {
+							...r,
+							[field]: field === "count" ? Number(value) || 0 : value,
+					  }
+					: r
+			)
+		);
+	};
+	const addCreditRow = () => {
+		setCreditRows((rows) => [...rows, { bank: "", count: 1 }]);
+	};
+	const removeCreditRow = (index) => {
+		setCreditRows((rows) => {
+			if (rows.length === 1) return rows;
+			return rows.filter((_, i) => i !== index);
+		});
+	};
+
+	useEffect(() => {
+		const loadContacts = async () => {
+			setContactsLoading(true);
+			setContactsError("");
+			try {
+				const res = await api.get("/contacts");
+				setContacts(res.data || []);
+			} catch (err) {
+				console.error(err);
+				setContactsError("Failed to load contacts list.");
+			} finally {
+				setContactsLoading(false);
+			}
+		};
+
+		const loadIntake = async () => {
+			if (!isEditing) return;
+			setLoading(true);
+			setError("");
+			try {
+				const res = await api.get(`/intake/${intakeId}`);
+				const intake = res.data;
+
+				const {
+					legal_name,
+					dba_name,
+					business_address,
+					tax_structure,
+					owners,
+					primary_contact_name,
+					primary_contact_email,
+					primary_contact_phone,
+					bookkeeping_start_date,
+					qbo_exists,
+					qbo_status,
+					qbo_num_users,
+					qbo_needs_class_tracking,
+					qbo_needs_location_tracking,
+					allow_login_access,
+					num_checking,
+					checking_banks,
+					num_savings,
+					savings_banks,
+					num_credit_cards,
+					credit_card_banks,
+					loans,
+					vehicles,
+					assets,
+					payment_methods,
+					non_business_deposits,
+					personal_expenses_in_business,
+					business_expenses_in_personal,
+					report_frequency,
+					income_tracking,
+					payroll_provider,
+
+					payroll_needs_setup,
+					payroll_process_regular,
+					payroll_corrections_adjustments,
+					payroll_quarterly_filings,
+					payroll_state_local_payments,
+					payroll_calculate_hours_commission,
+
+					additional_notes,
+				} = intake;
+
+				const checkingResolved = resolveStringToSelectAndOther(
+					checking_banks,
+					BANK_OPTIONS
+				);
+				const savingsResolved = resolveStringToSelectAndOther(
+					savings_banks,
+					BANK_OPTIONS
+				);
+				const creditResolved = resolveStringToSelectAndOther(
+					credit_card_banks,
+					BANK_OPTIONS
+				);
+				const payrollResolved = resolveStringToSelectAndOther(
+					payroll_provider,
+					PAYROLL_PROVIDER_OPTIONS
+				);
+
+				setForm((prev) => ({
+					...prev,
+					legal_name: legal_name || "",
+					dba_name: dba_name || "",
+					business_address: business_address || "",
+					tax_structure: tax_structure || "",
+					owners: owners || "",
+					primary_contact_name: primary_contact_name || "",
+					primary_contact_email: primary_contact_email || "",
+					primary_contact_phone: primary_contact_phone || "",
+					bookkeeping_start_date: bookkeeping_start_date || "",
+					qbo_status:
+						qbo_exists === true
+							? "yes"
+							: qbo_exists === false
+							? "no"
+							: "unsure",
+
+					qbo_num_users:
+						qbo_num_users === null || qbo_num_users === undefined
+							? ""
+							: String(qbo_num_users),
+					qbo_needs_class_tracking: !!qbo_needs_class_tracking,
+					qbo_needs_location_tracking: !!qbo_needs_location_tracking,
+					allow_login_access:
+						allow_login_access === null || allow_login_access === undefined
+							? true
+							: allow_login_access,
+
+					num_checking:
+						num_checking === null || num_checking === undefined
+							? ""
+							: String(num_checking),
+					checking_banks: checkingResolved.value,
+					checking_banks_other: checkingResolved.otherText,
+
+					num_savings:
+						num_savings === null || num_savings === undefined
+							? ""
+							: String(num_savings),
+					savings_banks: savingsResolved.value,
+					savings_banks_other: savingsResolved.otherText,
+
+					num_credit_cards:
+						num_credit_cards === null || num_credit_cards === undefined
+							? ""
+							: String(num_credit_cards),
+					credit_card_banks: creditResolved.value,
+					credit_card_banks_other: creditResolved.otherText,
+
+					loans: loans || "",
+					vehicles: vehicles || "",
+					assets: assets || "",
+
+					payment_methods: payment_methods || "",
+					non_business_deposits: !!non_business_deposits,
+					personal_expenses_in_business: !!personal_expenses_in_business,
+					business_expenses_in_personal: !!business_expenses_in_personal,
+
+					report_frequency: report_frequency || "",
+					income_tracking: income_tracking || "",
+
+					payroll_provider: payrollResolved.value,
+					payroll_provider_other: payrollResolved.otherText,
+
+					payroll_needs_setup: !!payroll_needs_setup,
+					payroll_process_regular: !!payroll_process_regular,
+					payroll_corrections_adjustments: !!payroll_corrections_adjustments,
+					payroll_quarterly_filings: !!payroll_quarterly_filings,
+					payroll_state_local_payments: !!payroll_state_local_payments,
+					payroll_calculate_hours_commission:
+						!!payroll_calculate_hours_commission,
+
+					additional_notes: additional_notes || "",
+				}));
+
+				// When loading an existing intake, start with "single bank" mode.
+				setCheckingMulti(false);
+				setSavingsMulti(false);
+				setCreditMulti(false);
+				setCheckingRows([{ bank: "", count: 1 }]);
+				setSavingsRows([{ bank: "", count: 1 }]);
+				setCreditRows([{ bank: "", count: 1 }]);
+			} catch (err) {
+				console.error(err);
+				setError("Failed to load intake.");
+			} finally {
+				setLoading(false);
+			}
+		};
+
+		loadContacts();
+		loadIntake();
+	}, [isEditing, intakeId]);
+
 	const handleChange = (e) => {
 		const { name, value, type, checked } = e.target;
-		setForm((prev) => ({
-			...prev,
-			[name]: type === "checkbox" ? checked : value,
-		}));
+
+		if (name === "primary_contact_id") {
+			const selected = contacts.find((c) => String(c.id) === value);
+
+			setForm((prev) => ({
+				...prev,
+				primary_contact_id: value,
+				primary_contact_name: selected?.name ?? prev.primary_contact_name,
+				primary_contact_email: selected?.email ?? prev.primary_contact_email,
+				primary_contact_phone: selected?.phone ?? prev.primary_contact_phone,
+			}));
+		} else {
+			setForm((prev) => ({
+				...prev,
+				[name]: type === "checkbox" ? checked : value,
+			}));
+		}
+
 		setError("");
 		setSuccess("");
 	};
-	const buildPayload = () => ({
-		legal_name: form.legal_name.trim(),
-		dba_name: form.dba_name.trim() || null,
-		business_address: form.business_address.trim() || null,
-		tax_structure: form.tax_structure.trim() || null,
-		owners: form.owners.trim() || null,
+	const buildPayload = () => {
+		const resolveBankField = (choiceValue, otherText) => {
+			const trimmedOther = (otherText || "").trim();
 
-		primary_contact_name: form.primary_contact_name.trim() || null,
-		primary_contact_email: form.primary_contact_email.trim() || null,
-		primary_contact_phone: form.primary_contact_phone.trim() || null,
+			if (!choiceValue) {
+				return trimmedOther || null;
+			}
+			if (choiceValue === "other") {
+				return trimmedOther || null;
+			}
+			const label = getBankLabel(choiceValue);
+			return label || trimmedOther || null;
+		};
 
-		bookkeeping_start_date: form.bookkeeping_start_date || null,
-		qbo_exists: form.qbo_exists,
-		allow_login_access: form.allow_login_access,
+		const payrollProviderFinal =
+			form.payroll_provider === "other"
+				? form.payroll_provider_other.trim() || null
+				: form.payroll_provider.trim() || null;
 
-		num_checking: toIntOrNull(form.num_checking),
-		checking_banks: form.checking_banks.trim() || null,
-		num_savings: toIntOrNull(form.num_savings),
-		savings_banks: form.savings_banks.trim() || null,
-		num_credit_cards: toIntOrNull(form.num_credit_cards),
-		credit_card_banks: form.credit_card_banks.trim() || null,
-		loans: form.loans.trim() || null,
-		vehicles: form.vehicles.trim() || null,
-		assets: form.assets.trim() || null,
+		let additional = form.additional_notes.trim();
 
-		payment_methods: form.payment_methods.trim() || null,
-		non_business_deposits: form.non_business_deposits,
-		personal_expenses_in_business: form.personal_expenses_in_business,
-		business_expenses_in_personal: form.business_expenses_in_personal,
+		const appendDetail = (label, enabled, text) => {
+			const t = (text || "").trim();
+			if (!enabled || !t) return;
+			if (additional) additional += "\n\n";
+			additional += `[${label}] ${t}`;
+		};
 
-		report_frequency: form.report_frequency || null,
-		income_tracking: form.income_tracking.trim() || null,
-		payroll_provider: form.payroll_provider.trim() || null,
+		appendDetail(
+			"Non-business deposits into business accounts",
+			form.non_business_deposits,
+			form.non_business_deposits_details
+		);
+		appendDetail(
+			"Personal expenses paid from business accounts",
+			form.personal_expenses_in_business,
+			form.personal_expenses_in_business_details
+		);
+		appendDetail(
+			"Business expenses paid from personal accounts",
+			form.business_expenses_in_personal,
+			form.business_expenses_in_personal_details
+		);
 
-		additional_notes: form.additional_notes.trim() || null,
-	});
+		const expandBankRows = (rows) => {
+			const expanded = [];
+			let total = 0;
 
-	// ?? Core save function, now supports:
-	// - exitAfter (go back to list)
-	// - convertAfter (hit convert endpoint & jump to client)
+			for (const row of rows) {
+				const cnt = Math.max(0, Number(row.count) || 0);
+				if (!cnt) continue;
+
+				let label = "";
+				if (row.bank === "other") {
+					label = "Other Bank";
+				} else {
+					const opt = BANK_OPTIONS.find((o) => o.value === row.bank);
+					label = opt?.label || "";
+				}
+				if (!label) continue;
+
+				for (let i = 0; i < cnt; i++) {
+					expanded.push(label);
+				}
+				total += cnt;
+			}
+
+			return { expanded, total };
+		};
+		const qboRecommendation = computeQboRecommendation(form);
+		const qboExists =
+			form.qbo_status === "yes"
+				? true
+				: form.qbo_status === "no"
+				? false
+				: null;
+
+		return {
+			legal_name: form.legal_name.trim(),
+			dba_name: form.dba_name.trim() || null,
+			business_address: form.business_address.trim() || null,
+			tax_structure: form.tax_structure.trim() || null,
+			owners: form.owners.trim() || null,
+
+			primary_contact_name: form.primary_contact_name.trim() || null,
+			primary_contact_email: form.primary_contact_email.trim() || null,
+			primary_contact_phone: form.primary_contact_phone.trim() || null,
+
+			bookkeeping_start_date: form.bookkeeping_start_date || null,
+			qbo_exists: qboExists,
+			allow_login_access: form.allow_login_access,
+
+			qbo_status: form.qbo_status || null,
+			qbo_num_users: toIntOrNull(form.qbo_num_users),
+			qbo_needs_class_tracking: form.qbo_needs_class_tracking,
+			qbo_needs_location_tracking: form.qbo_needs_location_tracking,
+			qbo_recommended_subscription: qboRecommendation,
+			// Checking
+			...(checkingMulti
+				? (() => {
+						const { expanded, total } = expandBankRows(checkingRows);
+						return {
+							num_checking: total || null,
+							checking_banks: expanded.length ? expanded.join(", ") : null,
+						};
+				  })()
+				: {
+						num_checking: toIntOrNull(form.num_checking),
+						checking_banks: resolveBankField(
+							form.checking_banks,
+							form.checking_banks_other
+						),
+				  }),
+
+			// Savings
+			...(savingsMulti
+				? (() => {
+						const { expanded, total } = expandBankRows(savingsRows);
+						return {
+							num_savings: total || null,
+							savings_banks: expanded.length ? expanded.join(", ") : null,
+						};
+				  })()
+				: {
+						num_savings: toIntOrNull(form.num_savings),
+						savings_banks: resolveBankField(
+							form.savings_banks,
+							form.savings_banks_other
+						),
+				  }),
+			// Credit cards
+			...(creditMulti
+				? (() => {
+						const { expanded, total } = expandBankRows(creditRows);
+						return {
+							num_credit_cards: total || null,
+							credit_card_banks: expanded.length ? expanded.join(", ") : null,
+						};
+				  })()
+				: {
+						num_credit_cards: toIntOrNull(form.num_credit_cards),
+						credit_card_banks: resolveBankField(
+							form.credit_card_banks,
+							form.credit_card_banks_other
+						),
+				  }),
+
+			loans: form.loans.trim() || null,
+			vehicles: form.vehicles.trim() || null,
+			assets: form.assets.trim() || null,
+
+			payment_methods: form.payment_methods.trim() || null,
+			non_business_deposits: form.non_business_deposits,
+			personal_expenses_in_business: form.personal_expenses_in_business,
+			business_expenses_in_personal: form.business_expenses_in_personal,
+
+			report_frequency: form.report_frequency || null,
+			income_tracking: form.income_tracking.trim() || null,
+			payroll_provider: payrollProviderFinal,
+
+			payroll_needs_setup: form.payroll_needs_setup,
+			payroll_process_regular: form.payroll_process_regular,
+			payroll_corrections_adjustments: form.payroll_corrections_adjustments,
+			payroll_quarterly_filings: form.payroll_quarterly_filings,
+			payroll_state_local_payments: form.payroll_state_local_payments,
+			payroll_calculate_hours_commission:
+				form.payroll_calculate_hours_commission,
+			additional_notes: additional || null,
+		};
+	};
+
 	const saveIntake = async ({
 		exitAfter = false,
 		convertAfter = false,
@@ -131,24 +609,29 @@ export default function ClientIntake() {
 			return;
 		}
 
-		const payload = buildPayload();
-
 		try {
-			// 1) Create intake
-			const res = await api.post("/intake", payload);
+			const payload = buildPayload(); // ? build first
+
+			let res;
+			if (isEditing) {
+				// Update existing intake
+				res = await api.put(`/intake/${intakeId}`, payload);
+			} else {
+				// Create new intake
+				res = await api.post("/intake", payload);
+			}
+
 			const intake = res.data;
 
-			// 2) If we want to convert immediately, do that now
 			if (convertAfter) {
+				const targetIntakeId = isEditing ? Number(intakeId) : intake.id;
 				try {
 					const convertRes = await api.post(
-						`/intake/${intake.id}/convert-to-client`
+						`/intake/${targetIntakeId}/convert-to-client`
 					);
 					const client = convertRes.data;
-
-					// Go straight to the new client detail
 					navigate(`/clients/${client.id}`);
-					return; // don't run exitAfter logic
+					return;
 				} catch (err) {
 					console.error(err);
 					setError(
@@ -159,19 +642,23 @@ export default function ClientIntake() {
 				}
 			}
 
-			// 3) Normal save behavior (no convert)
 			if (exitAfter) {
 				navigate("/clients/intake");
 			} else {
-				setSuccess("Intake saved successfully.");
+				setSuccess(
+					isEditing
+						? "Intake updated successfully."
+						: "Intake saved successfully."
+				);
 			}
 		} catch (err) {
-			console.error(err);
+			console.error("Failed to save intake:", err);
 			setError("Failed to save intake. Please double-check the fields.");
 		} finally {
 			setSaving(false);
 		}
 	};
+
 	const handleSubmit = async (e) => {
 		e.preventDefault();
 		await saveIntake({ exitAfter: false, convertAfter: false });
@@ -195,6 +682,9 @@ export default function ClientIntake() {
 		navigate("/clients/intake");
 	};
 
+	if (loading) {
+		return <div className="text-xs text-yecny-slate">Loading intake...</div>;
+	}
 	return (
 		<div className="space-y-5">
 			{/* Header */}
@@ -211,7 +701,7 @@ export default function ClientIntake() {
 						Client intake
 					</div>
 					<h1 className="text-2xl font-semibold text-yecny-charcoal">
-						New intake form
+						{isEditing ? "Edit intake" : "New intake form"}
 					</h1>
 					<p className="text-xs text-yecny-slate mt-1 max-w-xl">
 						Use this form during discovery calls to capture all the details you
@@ -280,7 +770,6 @@ export default function ClientIntake() {
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
 						</div>
-
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
 								Tax structure / entity type
@@ -294,7 +783,6 @@ export default function ClientIntake() {
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
 						</div>
-
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
 								Owners & ownership %
@@ -335,46 +823,82 @@ export default function ClientIntake() {
 							Who should Yecny reach out to with questions?
 						</p>
 					</div>
-					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Contact name
-							</label>
-							<input
-								type="text"
-								name="primary_contact_name"
-								value={form.primary_contact_name}
-								onChange={handleChange}
-								placeholder="Full name"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Email
-							</label>
-							<input
-								type="email"
-								name="primary_contact_email"
-								value={form.primary_contact_email}
-								onChange={handleChange}
-								placeholder="name@example.com"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
+
+					<div className="space-y-3">
+						{/* Link to existing contact */}
+						<div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
+							<div className="flex-1">
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Link to existing contact (optional)
+								</label>
+								<select
+									name="primary_contact_id"
+									value={form.primary_contact_id}
+									onChange={handleChange}
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+								>
+									<option value="">
+										{contactsLoading
+											? "Loading contacts..."
+											: "No linked contact"}
+									</option>
+									{contacts.map((c) => (
+										<option key={c.id} value={c.id}>
+											{c.name}
+											{c.email ? ` (${c.email})` : ""}
+										</option>
+									))}
+								</select>
+							</div>
+							{contactsError && (
+								<div className="text-[11px] text-red-600 mt-1 sm:mb-1">
+									{contactsError}
+								</div>
+							)}
 						</div>
 
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Phone
-							</label>
-							<input
-								type="tel"
-								name="primary_contact_phone"
-								value={form.primary_contact_phone}
-								onChange={handleChange}
-								placeholder="Best contact number"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
+						{/* Manual contact details */}
+						<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Contact name
+								</label>
+								<input
+									type="text"
+									name="primary_contact_name"
+									value={form.primary_contact_name}
+									onChange={handleChange}
+									placeholder="Full name"
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+								/>
+							</div>
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Email
+								</label>
+								<input
+									type="email"
+									name="primary_contact_email"
+									value={form.primary_contact_email}
+									onChange={handleChange}
+									placeholder="name@example.com"
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+								/>
+							</div>
+
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Phone
+								</label>
+								<input
+									type="tel"
+									name="primary_contact_phone"
+									value={form.primary_contact_phone}
+									onChange={handleChange}
+									placeholder="Best contact number"
+									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+								/>
+							</div>
 						</div>
 					</div>
 				</section>
@@ -389,7 +913,6 @@ export default function ClientIntake() {
 							When should we start, and what systems are already in place?
 						</p>
 					</div>
-
 					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
@@ -404,23 +927,122 @@ export default function ClientIntake() {
 							/>
 						</div>
 
-						<div className="flex items-center gap-2 mt-6">
-							<input
-								id="qbo_exists"
-								type="checkbox"
-								name="qbo_exists"
-								checked={form.qbo_exists}
-								onChange={handleChange}
-								className="h-4 w-4 border-slate-300 rounded"
-							/>
-							<label
-								htmlFor="qbo_exists"
-								className="text-xs text-yecny-slate select-none"
-							>
-								Client already has QuickBooks Online
+						{/* QBO status */}
+						<div>
+							<label className="block text-xs font-medium text-yecny-slate mb-1">
+								Do they already have QuickBooks Online?
 							</label>
+							<div className="flex flex-col gap-1 text-xs">
+								<label className="inline-flex items-center gap-2">
+									<input
+										type="radio"
+										name="qbo_status"
+										value="yes"
+										checked={form.qbo_status === "yes"}
+										onChange={handleChange}
+									/>
+									<span>Yes, they already have QBO</span>
+								</label>
+								<label className="inline-flex items-center gap-2">
+									<input
+										type="radio"
+										name="qbo_status"
+										value="no"
+										checked={form.qbo_status === "no"}
+										onChange={handleChange}
+									/>
+									<span>No, they will need a new subscription</span>
+								</label>
+								<label className="inline-flex items-center gap-2">
+									<input
+										type="radio"
+										name="qbo_status"
+										value="unsure"
+										checked={form.qbo_status === "unsure"}
+										onChange={handleChange}
+									/>
+									<span>Unsure / to be confirmed</span>
+								</label>
+							</div>
 						</div>
-						<div className="flex items-center gap-2 mt-6">
+
+						{/* QBO subscription planning */}
+						{form.qbo_status === "no" && (
+							<div className="mt-4 border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 space-y-3 md:col-span-1">
+								<div className="text-xs font-medium text-yecny-charcoal">
+									QBO subscription planning
+								</div>
+								<div className="grid grid-cols-1 gap-4 text-xs">
+									<div>
+										<label className="block font-medium text-yecny-slate mb-1">
+											How many QBO users will they need?
+										</label>
+										<input
+											type="number"
+											name="qbo_num_users"
+											min="1"
+											value={form.qbo_num_users}
+											onChange={handleChange}
+											className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+											placeholder="1"
+										/>
+										<p className="mt-1 text-[11px] text-slate-500">
+											If more than 1 user, they&apos;ll need at least
+											Essentials.
+										</p>
+									</div>
+									<div className="space-y-2">
+										<div className="font-medium text-yecny-slate mb-1">
+											Advanced features needed?
+										</div>
+										<label className="flex items-start gap-2">
+											<input
+												type="checkbox"
+												name="qbo_needs_class_tracking"
+												checked={form.qbo_needs_class_tracking}
+												onChange={handleChange}
+												className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+											/>
+											<span>They need class tracking</span>
+										</label>
+										<label className="flex items-start gap-2">
+											<input
+												type="checkbox"
+												name="qbo_needs_location_tracking"
+												checked={form.qbo_needs_location_tracking}
+												onChange={handleChange}
+												className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+											/>
+											<span>They need location tracking</span>
+										</label>
+									</div>
+
+									<div className="space-y-1">
+										<div className="font-medium text-yecny-slate mb-1">
+											Recommended subscription
+										</div>
+										<div className="inline-flex items-center px-3 py-1.5 rounded-full bg-white border border-slate-200 text-[11px] text-yecny-charcoal">
+											{(() => {
+												const rec = computeQboRecommendation(form);
+												if (!rec) return "Will confirm later";
+
+												if (rec === "simple_start") return "Simple Start";
+												if (rec === "essentials") return "Essentials";
+												if (rec === "plus") return "Plus";
+												return rec;
+											})()}
+										</div>
+										<p className="mt-1 text-[11px] text-slate-500">
+											This will be saved on the intake so you can confirm with
+											the client and Jason when scoping.
+										</p>
+									</div>
+								</div>
+							</div>
+						)}
+
+						{/* Bank login access */}
+						<div className="flex items-center gap-2 mt-6 md:col-span-3">
 							<input
 								id="allow_login_access"
 								type="checkbox"
@@ -438,7 +1060,6 @@ export default function ClientIntake() {
 						</div>
 					</div>
 				</section>
-
 				{/* Banking & accounts */}
 				<section className="space-y-4">
 					<div>
@@ -450,90 +1071,379 @@ export default function ClientIntake() {
 						</p>
 					</div>
 
-					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								# of business checking accounts
-							</label>
-							<input
-								type="number"
-								name="num_checking"
-								value={form.num_checking}
-								onChange={handleChange}
-								min="0"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
+					<div className="space-y-4">
+						{/* Checking accounts */}
+						<div className="border border-slate-100 rounded-md p-3 space-y-3">
+							<div className="flex items-center justify-between">
+								<div className="text-xs font-medium text-yecny-slate">
+									Checking accounts
+								</div>
+								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+									<input
+										type="checkbox"
+										checked={checkingMulti}
+										onChange={(e) => setCheckingMulti(e.target.checked)}
+										className="h-3 w-3"
+									/>
+									<span>Multiple banks?</span>
+								</label>
+							</div>
+
+							{!checkingMulti ? (
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											# of business checking accounts
+										</label>
+										<input
+											type="number"
+											name="num_checking"
+											value={form.num_checking}
+											onChange={handleChange}
+											min="0"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+
+									<div className="md:col-span-2">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Checking banks
+										</label>
+										<div className="flex flex-col sm:flex-row gap-2">
+											<select
+												name="checking_banks"
+												value={form.checking_banks}
+												onChange={handleChange}
+												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+											>
+												{BANK_OPTIONS.map((opt) => (
+													<option key={opt.value} value={opt.value}>
+														{opt.label}
+													</option>
+												))}
+											</select>
+
+											{form.checking_banks === "other" && (
+												<input
+													type="text"
+													name="checking_banks_other"
+													value={form.checking_banks_other}
+													onChange={handleChange}
+													placeholder="Example: Wells Fargo, Chase"
+													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+										<p className="mt-1 text-[11px] text-slate-500">
+											Use &quot;Other / Add new&quot; if their bank isn&apos;t
+											listed, or switch on &quot;Multiple banks?&quot; to
+											specify counts by bank.
+										</p>
+									</div>
+								</div>
+							) : (
+								<div className="space-y-2">
+									<div className="text-[11px] text-slate-500">
+										Add a row per bank and indicate how many checking accounts
+										they have at each.
+									</div>
+									<div className="space-y-2">
+										{checkingRows.map((row, index) => (
+											<div
+												key={index}
+												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+											>
+												<select
+													value={row.bank}
+													onChange={(e) =>
+														updateCheckingRow(index, "bank", e.target.value)
+													}
+													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												>
+													{BANK_OPTIONS.map((opt) => (
+														<option key={opt.value} value={opt.value}>
+															{opt.label}
+														</option>
+													))}
+												</select>
+												<input
+													type="number"
+													min="0"
+													value={row.count}
+													onChange={(e) =>
+														updateCheckingRow(index, "count", e.target.value)
+													}
+													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+													placeholder="#"
+												/>
+												{checkingRows.length > 1 && (
+													<button
+														type="button"
+														onClick={() => removeCheckingRow(index)}
+														className="text-[11px] text-red-600 hover:underline"
+													>
+														Remove
+													</button>
+												)}
+											</div>
+										))}
+									</div>
+
+									<button
+										type="button"
+										onClick={addCheckingRow}
+										className="text-[11px] text-yecny-primary hover:underline"
+									>
+										+ Add bank
+									</button>
+								</div>
+							)}
+						</div>
+						{/* Savings accounts */}
+						<div className="border border-slate-100 rounded-md p-3 space-y-3">
+							<div className="flex items-center justify-between">
+								<div className="text-xs font-medium text-yecny-slate">
+									Savings accounts
+								</div>
+								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+									<input
+										type="checkbox"
+										checked={savingsMulti}
+										onChange={(e) => setSavingsMulti(e.target.checked)}
+										className="h-3 w-3"
+									/>
+									<span>Multiple banks?</span>
+								</label>
+							</div>
+
+							{!savingsMulti ? (
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											# of business savings accounts
+										</label>
+										<input
+											type="number"
+											name="num_savings"
+											value={form.num_savings}
+											onChange={handleChange}
+											min="0"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+									<div className="md:col-span-2">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Savings banks
+										</label>
+										<div className="flex flex-col sm:flex-row gap-2">
+											<select
+												name="savings_banks"
+												value={form.savings_banks}
+												onChange={handleChange}
+												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+											>
+												{BANK_OPTIONS.map((opt) => (
+													<option key={opt.value} value={opt.value}>
+														{opt.label}
+													</option>
+												))}
+											</select>
+
+											{form.savings_banks === "other" && (
+												<input
+													type="text"
+													name="savings_banks_other"
+													value={form.savings_banks_other}
+													onChange={handleChange}
+													placeholder="Banks where savings accounts are held"
+													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+									</div>
+								</div>
+							) : (
+								<div className="space-y-2">
+									<div className="text-[11px] text-slate-500">
+										Add a row per bank and indicate how many savings accounts
+										they have at each.
+									</div>
+									<div className="space-y-2">
+										{savingsRows.map((row, index) => (
+											<div
+												key={index}
+												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+											>
+												<select
+													value={row.bank}
+													onChange={(e) =>
+														updateSavingsRow(index, "bank", e.target.value)
+													}
+													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												>
+													{BANK_OPTIONS.map((opt) => (
+														<option key={opt.value} value={opt.value}>
+															{opt.label}
+														</option>
+													))}
+												</select>
+												<input
+													type="number"
+													min="0"
+													value={row.count}
+													onChange={(e) =>
+														updateSavingsRow(index, "count", e.target.value)
+													}
+													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+													placeholder="#"
+												/>
+												{savingsRows.length > 1 && (
+													<button
+														type="button"
+														onClick={() => removeSavingsRow(index)}
+														className="text-[11px] text-red-600 hover:underline"
+													>
+														Remove
+													</button>
+												)}
+											</div>
+										))}
+									</div>
+
+									<button
+										type="button"
+										onClick={addSavingsRow}
+										className="text-[11px] text-yecny-primary hover:underline"
+									>
+										+ Add bank
+									</button>
+								</div>
+							)}
 						</div>
 
-						<div className="md:col-span-2">
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Checking banks
-							</label>
-							<input
-								type="text"
-								name="checking_banks"
-								value={form.checking_banks}
-								onChange={handleChange}
-								placeholder="Example: Wells Fargo, Chase"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
+						{/* Credit card accounts */}
+						<div className="border border-slate-100 rounded-md p-3 space-y-3">
+							<div className="flex items-center justify-between">
+								<div className="text-xs font-medium text-yecny-slate">
+									Credit card accounts
+								</div>
+								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+									<input
+										type="checkbox"
+										checked={creditMulti}
+										onChange={(e) => setCreditMulti(e.target.checked)}
+										className="h-3 w-3"
+									/>
+									<span>Multiple banks?</span>
+								</label>
+							</div>
+							{!creditMulti ? (
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											# of business credit cards
+										</label>
+										<input
+											type="number"
+											name="num_credit_cards"
+											value={form.num_credit_cards}
+											onChange={handleChange}
+											min="0"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+									<div className="md:col-span-2">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Credit card banks
+										</label>
+										<div className="flex flex-col sm:flex-row gap-2">
+											<select
+												name="credit_card_banks"
+												value={form.credit_card_banks}
+												onChange={handleChange}
+												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+											>
+												{BANK_OPTIONS.map((opt) => (
+													<option key={opt.value} value={opt.value}>
+														{opt.label}
+													</option>
+												))}
+											</select>
+
+											{form.credit_card_banks === "other" && (
+												<input
+													type="text"
+													name="credit_card_banks_other"
+													value={form.credit_card_banks_other}
+													onChange={handleChange}
+													placeholder="Example: AmEx, Chase, Citi"
+													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+									</div>
+								</div>
+							) : (
+								<div className="space-y-2">
+									<div className="text-[11px] text-slate-500">
+										Add a row per bank and indicate how many credit cards they
+										have at each.
+									</div>
+									<div className="space-y-2">
+										{creditRows.map((row, index) => (
+											<div
+												key={index}
+												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+											>
+												<select
+													value={row.bank}
+													onChange={(e) =>
+														updateCreditRow(index, "bank", e.target.value)
+													}
+													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												>
+													{BANK_OPTIONS.map((opt) => (
+														<option key={opt.value} value={opt.value}>
+															{opt.label}
+														</option>
+													))}
+												</select>
+												<input
+													type="number"
+													min="0"
+													value={row.count}
+													onChange={(e) =>
+														updateCreditRow(index, "count", e.target.value)
+													}
+													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+													placeholder="#"
+												/>
+												{creditRows.length > 1 && (
+													<button
+														type="button"
+														onClick={() => removeCreditRow(index)}
+														className="text-[11px] text-red-600 hover:underline"
+													>
+														Remove
+													</button>
+												)}
+											</div>
+										))}
+									</div>
+
+									<button
+										type="button"
+										onClick={addCreditRow}
+										className="text-[11px] text-yecny-primary hover:underline"
+									>
+										+ Add bank
+									</button>
+								</div>
+							)}
 						</div>
 
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								# of business savings accounts
-							</label>
-							<input
-								type="number"
-								name="num_savings"
-								value={form.num_savings}
-								onChange={handleChange}
-								min="0"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div className="md:col-span-2">
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Savings banks
-							</label>
-							<input
-								type="text"
-								name="savings_banks"
-								value={form.savings_banks}
-								onChange={handleChange}
-								placeholder="Banks where savings accounts are held"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								# of business credit cards
-							</label>
-							<input
-								type="number"
-								name="num_credit_cards"
-								value={form.num_credit_cards}
-								onChange={handleChange}
-								min="0"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div className="md:col-span-2">
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Credit card banks
-							</label>
-							<input
-								type="text"
-								name="credit_card_banks"
-								value={form.credit_card_banks}
-								onChange={handleChange}
-								placeholder="Example: AmEx, Chase, Citi"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-
-						<div className="md:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+						{/* Loans / vehicles / assets */}
+						<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 							<div>
 								<label className="block text-xs font-medium text-yecny-slate mb-1">
 									Loans
@@ -547,7 +1457,6 @@ export default function ClientIntake() {
 									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 								/>
 							</div>
-
 							<div>
 								<label className="block text-xs font-medium text-yecny-slate mb-1">
 									Vehicles
@@ -578,6 +1487,7 @@ export default function ClientIntake() {
 						</div>
 					</div>
 				</section>
+
 				{/* Transaction behavior */}
 				<section className="space-y-4">
 					<div>
@@ -612,12 +1522,23 @@ export default function ClientIntake() {
 									onChange={handleChange}
 									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
 								/>
-								<span>
-									They sometimes deposit non-business funds into business
-									accounts.
-								</span>
+								<div className="flex-1">
+									<div>
+										They sometimes deposit non-business funds into business
+										accounts.
+									</div>
+									{form.non_business_deposits && (
+										<input
+											type="text"
+											name="non_business_deposits_details"
+											value={form.non_business_deposits_details}
+											onChange={handleChange}
+											placeholder="Optional details (how often, typical amounts, etc.)"
+											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									)}
+								</div>
 							</label>
-
 							<label className="flex items-start gap-2 text-xs text-yecny-slate">
 								<input
 									type="checkbox"
@@ -626,9 +1547,21 @@ export default function ClientIntake() {
 									onChange={handleChange}
 									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
 								/>
-								<span>
-									They sometimes pay personal expenses from business accounts.
-								</span>
+								<div className="flex-1">
+									<div>
+										They sometimes pay personal expenses from business accounts.
+									</div>
+									{form.personal_expenses_in_business && (
+										<input
+											type="text"
+											name="personal_expenses_in_business_details"
+											value={form.personal_expenses_in_business_details}
+											onChange={handleChange}
+											placeholder="Optional details (card used, how they track, etc.)"
+											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									)}
+								</div>
 							</label>
 
 							<label className="flex items-start gap-2 text-xs text-yecny-slate">
@@ -639,9 +1572,21 @@ export default function ClientIntake() {
 									onChange={handleChange}
 									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
 								/>
-								<span>
-									They sometimes pay business expenses from personal accounts.
-								</span>
+								<div className="flex-1">
+									<div>
+										They sometimes pay business expenses from personal accounts.
+									</div>
+									{form.business_expenses_in_personal && (
+										<input
+											type="text"
+											name="business_expenses_in_personal_details"
+											value={form.business_expenses_in_personal_details}
+											onChange={handleChange}
+											placeholder="Optional details (which cards/accounts, how often, etc.)"
+											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									)}
+								</div>
 							</label>
 						</div>
 					</div>
@@ -654,7 +1599,8 @@ export default function ClientIntake() {
 							Reporting & payroll
 						</h2>
 						<p className="text-xs text-yecny-slate mt-1">
-							How often they want reports and how payroll is handled.
+							How often they want reports, how income is tracked, and what
+							payroll services they need.
 						</p>
 					</div>
 					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -689,22 +1635,110 @@ export default function ClientIntake() {
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
 						</div>
+
 						<div>
 							<label className="block text-xs font-medium text-yecny-slate mb-1">
 								Payroll provider
 							</label>
-							<input
-								type="text"
+							<select
 								name="payroll_provider"
 								value={form.payroll_provider}
 								onChange={handleChange}
-								placeholder="If they have payroll, who runs it?"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
+								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+							>
+								{PAYROLL_PROVIDER_OPTIONS.map((opt) => (
+									<option key={opt.value} value={opt.value}>
+										{opt.label}
+									</option>
+								))}
+							</select>
+
+							{form.payroll_provider === "other" && (
+								<input
+									type="text"
+									name="payroll_provider_other"
+									value={form.payroll_provider_other}
+									onChange={handleChange}
+									placeholder="Add a different payroll provider"
+									className="mt-2 w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+								/>
+							)}
+						</div>
+					</div>
+					{/* Payroll services checklist */}
+					<div className="mt-3 border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60">
+						<div className="text-xs font-medium text-yecny-charcoal mb-2">
+							Payroll services requested
+						</div>
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-yecny-slate">
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_needs_setup"
+									checked={form.payroll_needs_setup}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Initial payroll setup</span>
+							</label>
+
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_process_regular"
+									checked={form.payroll_process_regular}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Process regular payroll</span>
+							</label>
+
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_corrections_adjustments"
+									checked={form.payroll_corrections_adjustments}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Make payroll corrections / adjustments</span>
+							</label>
+
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_quarterly_filings"
+									checked={form.payroll_quarterly_filings}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Prepare quarterly payroll tax filings</span>
+							</label>
+
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_state_local_payments"
+									checked={form.payroll_state_local_payments}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Make all state &amp; local payroll tax payments</span>
+							</label>
+
+							<label className="inline-flex items-start gap-2">
+								<input
+									type="checkbox"
+									name="payroll_calculate_hours_commission"
+									checked={form.payroll_calculate_hours_commission}
+									onChange={handleChange}
+									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+								/>
+								<span>Calculate hours / commission per payroll</span>
+							</label>
 						</div>
 					</div>
 				</section>
-
 				{/* Additional notes */}
 				<section className="space-y-4">
 					<div>
@@ -751,7 +1785,6 @@ export default function ClientIntake() {
 						>
 							{saving ? "Saving..." : "Save & exit"}
 						</button>
-
 						<button
 							type="button"
 							onClick={handleSaveAndConvert}
