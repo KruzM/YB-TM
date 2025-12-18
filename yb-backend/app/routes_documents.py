@@ -10,6 +10,8 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_admin
 from datetime import date
+
+from .permissions import assert_client_upload_allowed
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Adjust this base path to match your actual documents directory
@@ -55,6 +57,7 @@ async def upload_document(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    assert_client_upload_allowed(db, current_user, client_id)
     account = db.query(models.Account).get(account_id)
     if not account or account.client_id != client_id:
         raise HTTPException(status_code=400, detail="Invalid account/client combo")
@@ -169,6 +172,7 @@ async def upload_general_document(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    assert_client_upload_allowed(db, current_user, client_id)
     client = db.query(models.Client).get(client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")

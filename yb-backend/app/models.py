@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Text,
     ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
@@ -495,3 +496,21 @@ class TaskNote(Base):
 
     task = relationship("Task", back_populates="notes")
     author = relationship("User")
+
+# ----------- Client / User Access -----------
+class ClientUserAccess(Base):
+    __tablename__ = "client_user_access"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # "client", "bookkeeper", "manager", "admin"
+    access_level = Column(String, nullable=False, default="client")
+
+    can_upload_docs = Column(Boolean, default=False, nullable=False)
+    can_view_tasks = Column(Boolean, default=True, nullable=False)
+    can_message = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("client_id", "user_id", name="uq_client_user"),)

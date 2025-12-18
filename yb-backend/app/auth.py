@@ -115,7 +115,7 @@ require_staff = role_required("Bookkeeper", "Manager", "Admin", "Owner")
 require_admin = role_required("Admin")
 require_owner = role_required("Owner")
 require_admin_or_owner = role_required("Admin", "Owner")
-
+require_client = role_required("Client")
 # Manager-level
 require_manager = role_required("Manager")
 require_manager_or_admin = role_required("Manager", "Admin", "Owner")
