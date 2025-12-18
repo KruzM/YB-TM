@@ -93,13 +93,11 @@ async def get_current_user(
     return user
 
 def role_required(*roles: str):
-    """
-    Dependency factory that ensures the current user has one of the allowed roles.
-    Usage:
-        current_admin = Depends(require_admin)
-    """
+    allowed = {r.strip().lower() for r in roles}
+
     def _dep(current_user: models.User = Depends(get_current_user)):
-        if current_user.role not in roles:
+        user_role = (current_user.role or "").strip().lower()
+        if user_role not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough permissions",
@@ -108,6 +106,10 @@ def role_required(*roles: str):
 
     return _dep
 
+# main dependencies
+require_bookkeeper = role_required("Bookkeeper")
+require_bookkeeper_or_manager = role_required("Bookkeeper", "Manager")
+require_staff = role_required("Bookkeeper", "Manager", "Admin", "Owner")
 
 # Convenience shortcuts
 require_admin = role_required("Admin")

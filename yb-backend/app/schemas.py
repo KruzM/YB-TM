@@ -47,7 +47,7 @@ class TaskBase(BaseModel):
     recurring_task_id: int | None = None
 
     # NEW: onboarding / classification
-    task_type: str | None = "recurring"  # 'recurring', 'onboarding', 'project', 'ad_hoc'
+    task_type: str | None = "ad_hoc"  # 'recurring', 'onboarding', 'project', 'ad_hoc'
     onboarding_phase: str | None = None
     template_task_id: int | None = None
 
@@ -71,6 +71,7 @@ class TaskOut(TaskBase):
     id: int
     due_date: Optional[datetime]
     assigned_user_id: Optional[int]
+    assigned_user_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by_id: int | None = None
@@ -236,7 +237,12 @@ class ClientNoteOut(ClientNoteBase):
 		# or orm_mode 
         from_attributes = True
 
-    
+
+class IntakeConvertIn(BaseModel):
+    manager_id: Optional[int] = None
+    bookkeeper_id: Optional[int] = None   
+
+
 # ---------- Client Intake ----------
 class ClientIntakeBase(BaseModel):
     # Basic business info
@@ -262,6 +268,8 @@ class ClientIntakeBase(BaseModel):
     bookkeeping_start_date: Optional[date] = None
     qbo_exists: Optional[bool] = None
     allow_login_access: Optional[bool] = None
+    manager_id: Optional[int] = None
+    bookkeeper_id: Optional[int] = None   
 
     # Richer QBO planning fields
     qbo_status: Optional[str] = None                    # 'yes', 'no', 'unsure'
@@ -329,6 +337,8 @@ class ClientIntakeUpdate(BaseModel):
     bookkeeping_start_date: Optional[date] = None
     qbo_exists: Optional[bool] = None
     allow_login_access: Optional[bool] = None
+    manager_id: Optional[int] = None
+    bookkeeper_id: Optional[int] = None
 
     qbo_status: Optional[str] = None
     qbo_num_users: Optional[int] = None

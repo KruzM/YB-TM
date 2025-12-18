@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from . import models, schemas
-from .auth import get_password_hash, require_manager_or_admin, require_admin_or_owner
+from .auth import get_password_hash, require_manager_or_admin, require_admin_or_owner, require_staff
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("/", response_model=List[schemas.UserOut])
 def list_users(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(require_manager_or_admin),
+    current_user: models.User = Depends(require_staff),
 ):
     """
     List all users.

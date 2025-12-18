@@ -31,6 +31,7 @@ def _create_task_from_rule(
         assigned_user_id=rule.assigned_user_id,
         client_id=rule.client_id,
         recurring_task_id=rule.id,
+        task_type="recurring",
     )
     db.add(task)
     return task
@@ -78,7 +79,7 @@ def create_recurring_task(
         active=True,
     )
     db.add(rule)
-
+    db.flush()  # Get rule.id populated
     # Create the initial concrete task for next_run
     _create_task_from_rule(db, rule)
 

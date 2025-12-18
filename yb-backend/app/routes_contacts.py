@@ -1,9 +1,9 @@
 # app/routes_contacts.py
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
 from sqlalchemy.orm import Session
-
+from sqlalchemy import or_
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_admin
@@ -99,22 +99,36 @@ async def update_contact(
     return contact
 
 
-@router.delete("/{contact_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_contact(
+@router.delete("/{contact_id}", status_code=204)
+def delete_contact(
     contact_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Delete a contact.
-    We require admin here to avoid accidental deletions.
-    """
     require_admin(current_user)
 
-    contact = db.query(models.Contact).filter(models.Contact.id == contact_id).first()
-    if not contact:
+    c = db.query(models.Contact).get(contact_id)
+    if not c:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    db.delete(contact)
+    # Block deletion if the contact is referenced anywhere important
+    client_refs = db.query(models.Client).filter(models.Client.primary_contact_id == contact_id).count()
+    intake_refs = (
+        db.query(models.ClientIntake)
+        .filter(or_(
+            models.ClientIntake.primary_contact_id == contact_id,
+            models.ClientIntake.cpa_contact_id == contact_id,
+        ))
+        .count()
+    )
+    owner_refs = db.query(models.IntakeOwner).filter(models.IntakeOwner.contact_id == contact_id).count()
+
+    if client_refs or intake_refs or owner_refs:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Contact is in use (clients={client_refs}, intakes={intake_refs}, owners={owner_refs}). Unlink it first.",
+        )
+
+    db.delete(c)
     db.commit()
-    return None
+    return Response(status_code=204)

@@ -11,6 +11,9 @@ const TYPE_OPTIONS = [
 
 export default function Contacts() {
 	const { user } = useAuth();
+	const isAdmin = ["admin", "owner"].includes(
+		String(user?.role || "").toLowerCase()
+	);
 
 	const [contacts, setContacts] = useState([]);
 	const [loading, setLoading] = useState(true);
@@ -312,7 +315,7 @@ export default function Contacts() {
 											>
 												Edit
 											</button>
-											{user?.role === "admin" && (
+											{isAdmin && (
 												<button
 													type="button"
 													onClick={() => handleDeleteContact(c.id)}

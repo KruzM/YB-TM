@@ -1,12 +1,12 @@
 # yb-backend/app/routes_intake.py
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Body, Response
 from sqlalchemy.orm import Session
 
 from .database import get_db
 from . import models, schemas
-from .auth import get_current_user
+from .auth import get_current_user, require_admin
 from datetime import datetime
 from .onboarding import create_onboarding_tasks_for_client
 from .routes_clients import create_default_recurring_tasks_for_client
@@ -50,6 +50,28 @@ async def create_intake(
     db.refresh(intake)
     return intake
 
+def _repair_orphaned_intakes(db: Session) -> int:
+    orphaned = (
+        db.query(models.ClientIntake)
+        .filter(models.ClientIntake.client_id.isnot(None))
+        .filter(
+            ~db.query(models.Client.id)
+            .filter(models.Client.id == models.ClientIntake.client_id)
+            .exists()
+        )
+        .all()
+    )
+
+    if not orphaned:
+        return 0
+
+    for i in orphaned:
+        i.client_id = None
+        i.converted_at = None
+
+    db.commit()
+    return len(orphaned)
+
 
 @router.get("/", response_model=List[schemas.ClientIntakeOut])
 async def list_intakes(
@@ -69,7 +91,7 @@ async def list_intakes(
     List intake records, with optional status & text search.
     """
     q = db.query(models.ClientIntake)
-
+    _repair_orphaned_intakes(db)
     if status_filter:
         q = q.filter(models.ClientIntake.status == status_filter)
 
@@ -126,24 +148,33 @@ async def update_intake(
     return intake
 
 
-
-@router.delete("/{intake_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_intake(
+@router.delete("/{intake_id}", status_code=204)
+def delete_intake(
     intake_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Hard-delete an intake record.
-    In the future we might switch this to 'archived' instead of delete.
-    """
-    intake = db.query(models.ClientIntake).filter(models.ClientIntake.id == intake_id).first()
+    require_admin(current_user)
+
+    intake = db.query(models.ClientIntake).get(intake_id)
     if not intake:
         raise HTTPException(status_code=404, detail="Intake not found")
 
+    # Safety: don't allow deleting an intake that's already converted
+    if intake.client_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This intake is already converted to a client. Archive it instead (or add a force-delete workflow).",
+        )
+
+    # Clean up join table rows first (SQLite + batch constraints can be picky)
+    db.query(models.IntakeOwner).filter(models.IntakeOwner.intake_id == intake_id).delete(
+        synchronize_session=False
+    )
+
     db.delete(intake)
     db.commit()
-    return None
+    return Response(status_code=204)
 
 
 # Helper: safely turn a value into an int or None
@@ -316,17 +347,19 @@ def create_contacts_from_intake(
 @router.post("/{intake_id}/convert-to-client", response_model=schemas.ClientOut)
 async def convert_intake_to_client(
     intake_id: int,
+    convert_in: Optional[schemas.IntakeConvertIn] = Body(default=None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
     Create a Client from a completed intake form.
 
-    - Maps core intake fields into the Client model.
-    - Auto-creates bank/credit accounts from intake answers.
-    - Creates default recurring tasks for the new client.
-    - Links intake.client_id + converted_at.
+    - Body is OPTIONAL. If you send manager_id/bookkeeper_id it will override intake values.
+    - If body is omitted, it will use intake.manager_id/intake.bookkeeper_id.
     """
+    if convert_in is None:
+        convert_in = schemas.IntakeConvertIn()
+
     intake = (
         db.query(models.ClientIntake)
         .filter(models.ClientIntake.id == intake_id)
@@ -345,7 +378,10 @@ async def convert_intake_to_client(
         if client:
             return client
 
-    # Map intake -> client fields (adjust field names if needed)
+    # Prefer request body if provided; else fall back to intake stored assignments
+    manager_id = convert_in.manager_id if convert_in.manager_id is not None else getattr(intake, "manager_id", None)
+    bookkeeper_id = convert_in.bookkeeper_id if convert_in.bookkeeper_id is not None else getattr(intake, "bookkeeper_id", None)
+
     report_freq = (getattr(intake, "report_frequency", "") or "").lower()
 
     client = models.Client(
@@ -358,35 +394,33 @@ async def convert_intake_to_client(
         billing_frequency=report_freq or None,
         bookkeeping_frequency=report_freq or None,
         cpa=None,
-        manager_id=None,
-        bookkeeper_id=None,
+        manager_id=manager_id,
+        bookkeeper_id=bookkeeper_id,
     )
     db.add(client)
-    db.flush()  # so client.id is available
+    db.flush()
 
-    # create/ensure Contact records and link primary_contact_id
     create_contacts_from_intake(db, client, intake)
-    
-    # create Accounts based on intake answers
     create_accounts_from_intake(db, client, intake)
 
-    # Also create default recurring rules/tasks
     create_default_recurring_tasks_for_client(db, client, current_user)
-    
-    # Create onboarding tasks for the new client
+
     create_onboarding_tasks_for_client(
         db=db,
         client=client,
         created_by_user_id=current_user.id,
     )
 
-    # Link intake -> client and mark as converted
     if hasattr(intake, "client_id"):
         intake.client_id = client.id
     if hasattr(intake, "status"):
         intake.status = "completed"
     if hasattr(intake, "converted_at"):
-        intake.converted_at = datetime.utcnow()
+        intake.converted_at = datetime.now()
+    if hasattr(intake, "manager_id"):
+        intake.manager_id = manager_id
+    if hasattr(intake, "bookkeeper_id"):
+        intake.bookkeeper_id = bookkeeper_id
 
     db.commit()
     db.refresh(client)

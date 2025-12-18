@@ -215,6 +215,13 @@ class ClientIntake(Base):
     qbo_exists = Column(Boolean, default=False)
     allow_login_access = Column(Boolean, default=True)
 
+    # Internal staffing (set after discovery call, before conversion)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    bookkeeper_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    manager = relationship("User", foreign_keys=[manager_id], lazy="joined")
+    bookkeeper = relationship("User", foreign_keys=[bookkeeper_id], lazy="joined")
+
     # 'yes', 'no', or 'unsure'
     qbo_status = Column(String, nullable=True)
     qbo_num_users = Column(Integer, nullable=True)
@@ -274,11 +281,12 @@ class ClientIntake(Base):
     )
     # Audit
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_by = relationship("User", lazy="joined")
+    created_by = relationship("User", foreign_keys=[created_by_id], lazy="joined")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+   
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
     )
   # If converted to client, link to client record
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
@@ -363,7 +371,7 @@ class OnboardingTemplateTask(Base):
     # X days after client.created_at to set the due date
     default_due_offset_days = Column(Integer, nullable=True)
 
-    # 'bookkeeper', 'manager', 'admin' � we�ll just use plain strings
+    # 'bookkeeper', 'manager', 'admin' 
     default_assigned_role = Column(String, nullable=True)
 
     # Order for display
@@ -399,24 +407,28 @@ class Task(Base):
         index=True,
     )
 
-    # NEW: onboarding / task classification fields
+    # onboarding / task classification fields
     task_type = Column(
         String,
         nullable=False,
-        default="recurring",  # 'recurring', 'onboarding', 'project', 'ad_hoc'
+        default="ad_hoc",  # 'recurring', 'onboarding', 'project', 'ad_hoc'
     )
 
-    # NEW: grouping for onboarding tab
+    # grouping for onboarding tab
     onboarding_phase = Column(String, nullable=True)
 
-    # NEW: link back to the template row that created this task (if any)
+    # link back to the template row that created this task (if any)
     template_task_id = Column(
         Integer,
         ForeignKey("onboarding_template_tasks.id"),
         nullable=True,
     )
-
-    # NEW: who created this task
+    @property
+    def assigned_user_name(self):
+        if self.assigned_user:
+         return self.assigned_user.name or self.assigned_user.email
+        return None
+    # who created this task
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

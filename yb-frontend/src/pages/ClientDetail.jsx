@@ -5,6 +5,7 @@ import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import ClientDangerZone from "../components/clients/ClientDangerZone";
 import ClientNotesPanel from "../components/clients/ClientNote";
+import ClientTasksTab from "../components/clients/ClientTasksTab";
 
 const TABS = [
 	"Profile",
@@ -12,6 +13,7 @@ const TABS = [
 	"Statements",
 	"Documents",
 	"Onboarding",
+	"Tasks",
 	"Recurring",
 	"Notes",
 	"Danger Zone",
@@ -191,7 +193,9 @@ export default function ClientDetail() {
 			{activeTab === "Onboarding" && (
 				<OnboardingTab clientId={client.id} users={users} />
 			)}
-
+			{activeTab === "Tasks" && (
+				<ClientTasksTab clientId={client.id} users={users} />
+			)}
 			{activeTab === "Recurring" && (
 				<RecurringTab client={client} users={users} />
 			)}

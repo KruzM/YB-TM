@@ -3,10 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import date, timedelta, datetime
-
+from pathlib import Path
+import os
 from .database import get_db
 from . import models, schemas
-from .auth import get_current_user,require_admin, require_owner
+from .auth import get_current_user,require_admin, require_owner, require_staff
 from .onboarding import create_onboarding_tasks_for_client as create_onboarding_tasks_helper
 
 from .models import (
@@ -17,6 +18,55 @@ from .models import (
 )
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+# Make docs root configurable for your future NAS move
+DOCS_ROOT = Path(os.getenv("YECNY_DOCS_ROOT", "/home/kruzer04/YBTM/YB-TM/docs")).resolve()
+
+
+def _safe_unlink(path_str: str) -> None:
+    """
+    Delete a file if it exists, but ONLY if it's inside DOCS_ROOT.
+    Prevents accidental deletion outside your docs directory.
+    """
+    if not path_str:
+        return
+
+    p = Path(path_str).resolve()
+
+    # Ensure p is under DOCS_ROOT
+    try:
+        p.relative_to(DOCS_ROOT)
+    except ValueError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Refusing to delete file outside DOCS_ROOT: {p}",
+        )
+
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        # already gone = fine for purge
+        return
+
+
+def _cleanup_empty_parents(start_dir: Path) -> None:
+    """
+    Try to remove empty directories up to DOCS_ROOT.
+    Stops when a directory isn't empty.
+    """
+    d = start_dir.resolve()
+    while True:
+        if d == DOCS_ROOT:
+            return
+        try:
+            d.relative_to(DOCS_ROOT)
+        except ValueError:
+            return
+
+        try:
+            d.rmdir()
+        except OSError:
+            return
+        d = d.parent
 
 
 @router.get("/", response_model=List[schemas.ClientOut])
@@ -292,6 +342,8 @@ def create_client_purge_request(
     db.refresh(pr)
     return pr
 
+
+
 @router.post("/{client_id}/purge-request/{request_id}/approve")
 def approve_and_execute_client_purge(
     client_id: int,
@@ -299,10 +351,6 @@ def approve_and_execute_client_purge(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_owner),
 ):
-    """
-    Step 2: Owner approves the purge request.
-    This will delete the client and all linked data.
-    """
     pr = (
         db.query(models.ClientPurgeRequest)
         .filter(
@@ -312,33 +360,82 @@ def approve_and_execute_client_purge(
         .first()
     )
     if not pr or pr.status != "pending":
-        raise HTTPException(
-            status_code=404,
-            detail="Pending purge request not found.",
-        )
+        raise HTTPException(status_code=404, detail="Pending purge request not found.")
 
-    # Enforce "two people" rule
     if pr.requested_by_id == current_user.id:
         raise HTTPException(
             status_code=400,
             detail="The owner approving the purge must be a different user than the requester.",
         )
 
-    # Perform the purge -> delete related records first, then the client
-    db.query(models.Task).filter(models.Task.client_id == client_id).delete()
-    db.query(models.Account).filter(models.Account.client_id == client_id).delete()
-    db.query(models.Document).filter(models.Document.client_id == client_id).delete()
-
     client = db.query(models.Client).get(client_id)
-    if client:
-        db.delete(client)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
 
-    pr.status = "executed"
+    # mark approved (audit-ish)
+    pr.status = "approved"
     pr.approved_by_id = current_user.id
     pr.approved_at = datetime.utcnow()
-    pr.executed_at = datetime.utcnow()
+    db.flush()
 
-    db.commit()
+    try:
+        # 1) Delete document files from disk (then DB rows)
+        docs = db.query(models.Document).filter(models.Document.client_id == client_id).all()
+        for doc in docs:
+            if doc.stored_path:
+                _safe_unlink(doc.stored_path)
+                _cleanup_empty_parents(Path(doc.stored_path).resolve().parent)
 
-    return {"message": "Client and related data purged successfully."}
+        db.query(models.Document).filter(models.Document.client_id == client_id).delete(
+            synchronize_session=False
+        )
 
+        # 2) Tasks: delete children first (subtasks/notes), then tasks
+        task_ids = [
+            tid for (tid,) in db.query(models.Task.id).filter(models.Task.client_id == client_id).all()
+        ]
+        if task_ids:
+            db.query(models.TaskSubtask).filter(models.TaskSubtask.task_id.in_(task_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.TaskNote).filter(models.TaskNote.task_id.in_(task_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.Task).filter(models.Task.id.in_(task_ids)).delete(
+                synchronize_session=False
+            )
+
+        # 3) Other client-linked tables
+        db.query(models.Account).filter(models.Account.client_id == client_id).delete(synchronize_session=False)
+        db.query(models.RecurringTask).filter(models.RecurringTask.client_id == client_id).delete(synchronize_session=False)
+        db.query(models.ClientNote).filter(models.ClientNote.client_id == client_id).delete(synchronize_session=False)
+
+        # 4) Intake rows for this client (true purge = delete, not detach)
+        intake_ids = [
+            iid for (iid,) in db.query(models.ClientIntake.id).filter(models.ClientIntake.client_id == client_id).all()
+        ]
+        if intake_ids:
+            db.query(models.IntakeOwner).filter(models.IntakeOwner.intake_id.in_(intake_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(models.ClientIntake).filter(models.ClientIntake.id.in_(intake_ids)).delete(
+                synchronize_session=False
+            )
+
+        # 5) Purge requests must go too (your FK is non-nullable)
+        db.query(models.ClientPurgeRequest).filter(models.ClientPurgeRequest.client_id == client_id).delete(
+            synchronize_session=False
+        )
+
+        # 6) Finally delete the client row
+        db.delete(client)
+
+        db.commit()
+        return {"message": "Client and related data purged successfully."}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred during purge: {str(e)}",
+        )

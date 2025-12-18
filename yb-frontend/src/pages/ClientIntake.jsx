@@ -55,6 +55,8 @@ const initialFormState = {
 	qbo_needs_class_tracking: false,
 	qbo_needs_location_tracking: false,
 	allow_login_access: true,
+	manager_id: "",
+	bookkeeper_id: "",
 
 	// Banking & accounts
 	num_checking: "",
@@ -148,6 +150,11 @@ export default function ClientIntake() {
 	const [contactsLoading, setContactsLoading] = useState(false);
 	const [contactsError, setContactsError] = useState("");
 
+	// Users for manager/bookkeeper dropdowns
+	const [users, setUsers] = useState([]);
+	const [usersLoading, setUsersLoading] = useState(false);
+	const [usersError, setUsersError] = useState("");
+
 	// Multiple-bank mode toggles + rows
 	const [checkingMulti, setCheckingMulti] = useState(false);
 	const [checkingRows, setCheckingRows] = useState([{ bank: "", count: 1 }]);
@@ -238,6 +245,20 @@ export default function ClientIntake() {
 			}
 		};
 
+		const loadUsers = async () => {
+			setUsersLoading(true);
+			setUsersError("");
+			try {
+				const res = await api.get("/users");
+				setUsers(res.data || []);
+			} catch (err) {
+				console.error(err);
+				setUsersError("Failed to load users list.");
+			} finally {
+				setUsersLoading(false);
+			}
+		};
+
 		const loadIntake = async () => {
 			if (!isEditing) return;
 			setLoading(true);
@@ -278,7 +299,6 @@ export default function ClientIntake() {
 					report_frequency,
 					income_tracking,
 					payroll_provider,
-
 					payroll_needs_setup,
 					payroll_process_regular,
 					payroll_corrections_adjustments,
@@ -335,6 +355,12 @@ export default function ClientIntake() {
 							? true
 							: allow_login_access,
 
+					// IMPORTANT: intake -> form assignment fields
+					manager_id: intake.manager_id ? String(intake.manager_id) : "",
+					bookkeeper_id: intake.bookkeeper_id
+						? String(intake.bookkeeper_id)
+						: "",
+
 					num_checking:
 						num_checking === null || num_checking === undefined
 							? ""
@@ -348,7 +374,6 @@ export default function ClientIntake() {
 							: String(num_savings),
 					savings_banks: savingsResolved.value,
 					savings_banks_other: savingsResolved.otherText,
-
 					num_credit_cards:
 						num_credit_cards === null || num_credit_cards === undefined
 							? ""
@@ -382,7 +407,6 @@ export default function ClientIntake() {
 					additional_notes: additional_notes || "",
 				}));
 
-				// When loading an existing intake, start with "single bank" mode.
 				setCheckingMulti(false);
 				setSavingsMulti(false);
 				setCreditMulti(false);
@@ -398,6 +422,7 @@ export default function ClientIntake() {
 		};
 
 		loadContacts();
+		loadUsers();
 		loadIntake();
 	}, [isEditing, intakeId]);
 
@@ -515,6 +540,8 @@ export default function ClientIntake() {
 			bookkeeping_start_date: form.bookkeeping_start_date || null,
 			qbo_exists: qboExists,
 			allow_login_access: form.allow_login_access,
+			manager_id: form.manager_id ? Number(form.manager_id) : null,
+			bookkeeper_id: form.bookkeeper_id ? Number(form.bookkeeper_id) : null,
 
 			qbo_status: form.qbo_status || null,
 			qbo_num_users: toIntOrNull(form.qbo_num_users),
@@ -627,7 +654,13 @@ export default function ClientIntake() {
 				const targetIntakeId = isEditing ? Number(intakeId) : intake.id;
 				try {
 					const convertRes = await api.post(
-						`/intake/${targetIntakeId}/convert-to-client`
+						`/intake/${targetIntakeId}/convert-to-client`,
+						{
+							manager_id: form.manager_id ? Number(form.manager_id) : null,
+							bookkeeper_id: form.bookkeeper_id
+								? Number(form.bookkeeper_id)
+								: null,
+						}
 					);
 					const client = convertRes.data;
 					navigate(`/clients/${client.id}`);
@@ -1040,6 +1073,66 @@ export default function ClientIntake() {
 								</div>
 							</div>
 						)}
+						{/* Assignment */}
+						<div className="md:col-span-3 border border-slate-100 rounded-lg p-4 bg-slate-50/50 space-y-3">
+							<div className="flex items-start justify-between gap-3">
+								<div>
+									<div className="text-xs font-medium text-yecny-charcoal">
+										Internal assignment (optional)
+									</div>
+									<p className="text-[11px] text-slate-500 mt-0.5">
+										You can leave these blank during the discovery call and set
+										them later before converting.
+									</p>
+								</div>
+								{usersError && (
+									<div className="text-[11px] text-red-600">{usersError}</div>
+								)}
+							</div>
+
+							<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Manager
+									</label>
+									<select
+										name="manager_id"
+										value={form.manager_id}
+										onChange={handleChange}
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									>
+										<option value="">
+											{usersLoading ? "Loading users..." : "Unassigned"}
+										</option>
+										{users.map((u) => (
+											<option key={u.id} value={u.id}>
+												{u.name} ({u.role})
+											</option>
+										))}
+									</select>
+								</div>
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Bookkeeper
+									</label>
+									<select
+										name="bookkeeper_id"
+										value={form.bookkeeper_id}
+										onChange={handleChange}
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									>
+										<option value="">
+											{usersLoading ? "Loading users..." : "Unassigned"}
+										</option>
+										{users.map((u) => (
+											<option key={u.id} value={u.id}>
+												{u.name} ({u.role})
+											</option>
+										))}
+									</select>
+								</div>
+							</div>
+						</div>
 
 						{/* Bank login access */}
 						<div className="flex items-center gap-2 mt-6 md:col-span-3">

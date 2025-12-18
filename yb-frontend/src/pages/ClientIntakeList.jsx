@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../api/client";
+import { useAuth } from "../context/AuthContext";
 
 export default function ClientIntakeList() {
 	const [intakes, setIntakes] = useState([]);
@@ -9,7 +10,10 @@ export default function ClientIntakeList() {
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
 	const [convertingId, setConvertingId] = useState(null);
-
+	const { user } = useAuth();
+	const isAdmin = ["admin", "owner"].includes(
+		String(user?.role || "").toLowerCase()
+	);
 	const navigate = useNavigate();
 
 	const loadIntakes = async () => {
@@ -32,7 +36,20 @@ export default function ClientIntakeList() {
 		loadIntakes();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
+	const handleDeleteIntake = async (id) => {
+		const typed = window.prompt(
+			"Type DELETE to permanently remove this intake form:"
+		);
+		if (typed !== "DELETE") return;
 
+		try {
+			await api.delete(`/intake/${id}`);
+			await loadIntakes();
+		} catch (err) {
+			console.error(err);
+			alert(err?.response?.data?.detail || "Failed to delete intake.");
+		}
+	};
 	const handleConvert = async (id) => {
 		if (!window.confirm("Create a Client from this intake form?")) return;
 		setConvertingId(id);
@@ -226,7 +243,16 @@ export default function ClientIntakeList() {
 													>
 														View / Edit intake
 													</Link>
-
+													{/* Delete intake form */}
+													{isAdmin && (
+														<button
+															type="button"
+															onClick={() => handleDeleteIntake(i.id)}
+															className="px-3 py-1.5 rounded-md border border-red-200 bg-white text-red-600 hover:bg-red-50"
+														>
+															Delete
+														</button>
+													)}
 													{/* Create or view client */}
 													{i.client_id ? (
 														<Link
