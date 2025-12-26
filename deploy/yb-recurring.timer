@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Yecny OS recurring task runner daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

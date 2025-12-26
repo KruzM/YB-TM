@@ -1,4 +1,5 @@
 # app/main.py
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,7 +24,8 @@ from .routes_admin_audit import router as admin_audit_router
 
 app = FastAPI(title="Yecny Bookkeeping OS API")
 
-origins = [
+origins_env = os.getenv("YB_CORS_ORIGINS", "").strip()
+origins = [o.strip() for o in origins_env.split(",") if o.strip()] if origins_env else [
     "http://10.0.0.237:5173",
     "http://localhost:5173",
     "http://127.0.0.1:5173",

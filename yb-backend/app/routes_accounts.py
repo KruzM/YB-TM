@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
+from .permissions import assert_client_access
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -21,6 +22,8 @@ async def list_accounts(
     List accounts for a given client.
     client_id is required (query param).
     """
+    assert_client_access(db, current_user, client_id)
+
     accounts = (
         db.query(models.Account)
         .filter(models.Account.client_id == client_id)
@@ -38,6 +41,8 @@ async def create_account(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    assert_client_access(db, current_user, account_in.client_id)
+
     # Optional: verify client exists
     client = (
         db.query(models.Client)
@@ -69,6 +74,9 @@ async def update_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    assert_client_access(db, current_user, account.client_id)
+
+
     for field, value in account_in.dict(exclude_unset=True).items():
         setattr(account, field, value)
 
@@ -90,6 +98,8 @@ async def delete_account(
     )
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    assert_client_access(db, current_user, account.client_id)
 
     db.delete(account)
     db.commit()

@@ -1,0 +1,16 @@
+[Unit]
+Description=Yecny OS Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kruzer04/YBTM/YB-TM/yb-backend
+Environment=PYTHONUNBUFFERED=1
+# Put secrets/config in this file (e.g. YB_SECRET_KEY, YB_CORS_ORIGINS, YB_BACKUP_DIR)
+EnvironmentFile=/home/kruzer04/YBTM/YB-TM/.env
+ExecStart=/home/kruzer04/YBTM/YB-TM/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

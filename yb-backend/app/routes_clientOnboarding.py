@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from .database import get_db
 from .auth import get_current_user
 from .models import Task, Client, User
+from .permissions import assert_client_access, is_owner, is_admin
 from .schemas import TaskOut
 
 router = APIRouter(prefix="/client-onboarding", tags=["client-onboarding"])
@@ -14,7 +15,8 @@ router = APIRouter(prefix="/client-onboarding", tags=["client-onboarding"])
 
 
 def _is_admin_user(u: User) -> bool:
-    return (u.role or "").strip().lower() in ("admin", "owner")
+    return is_owner(u) or is_admin(u)
+
 
 @router.get("/clients/{client_id}/tasks", response_model=List[TaskOut])
 def list_client_onboarding_tasks(
@@ -22,9 +24,7 @@ def list_client_onboarding_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    client = db.query(Client).get(client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = assert_client_access(db, current_user, client_id)
 
     q = (
         db.query(Task)
@@ -36,12 +36,9 @@ def list_client_onboarding_tasks(
         )
     )
 
-    # ? Non-admin users only see tasks assigned to them (and not blocked)
+    # Non-admin users: hide blocked tasks, but allow staff to see the full client onboarding once released
     if not _is_admin_user(current_user):
-        q = q.filter(
-            Task.assigned_user_id == current_user.id,
-            func.lower(Task.status) != "blocked",
-        )
+        q = q.filter(func.lower(Task.status) != "blocked")
 
     tasks = q.order_by(Task.due_date.asc().nulls_last(), Task.id.asc()).all()
     return tasks

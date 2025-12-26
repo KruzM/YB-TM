@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -253,7 +253,9 @@ def release_onboarding_tasks_if_ready(
         t.status = "new"
         released += 1
 
-        if released > 0:
-            db.commit()
+
+
+    if released > 0:
+        db.commit()
 
     return released

@@ -64,9 +64,17 @@ async def get_me(current_user: models.User = Depends(get_current_user)):
 async def init_admin(
     user_in: schemas.UserCreate, db: Session = Depends(get_db)
 ):
-    existing = (
-        db.query(models.User).filter(models.User.email == user_in.email).first()
-    )
+    """
+    Bootstrap endpoint for a fresh install ONLY.
+
+    Security:
+    - Only works if there are zero users in the database.
+    - Always creates an OWNER user (ignores role from payload).
+    """
+    if db.query(models.User).count() > 0:
+        raise HTTPException(status_code=403, detail="init-admin is disabled")
+
+    existing = db.query(models.User).filter(models.User.email == user_in.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
@@ -74,7 +82,7 @@ async def init_admin(
         email=user_in.email,
         name=user_in.name,
         hashed_password=get_password_hash(user_in.password),
-        role=user_in.role,
+        role="owner",
         is_active=True,
     )
     db.add(admin)

@@ -1,6 +1,7 @@
 # app/routes_clients.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List, Optional
 from datetime import date, timedelta, datetime
 from pathlib import Path
@@ -10,6 +11,8 @@ from . import models, schemas
 from .auth import get_current_user,require_admin, require_owner, require_staff
 from .onboarding import create_onboarding_tasks_for_client as create_onboarding_tasks_helper
 from .audit import log_event
+from .recurring_utils import advance_next_run
+from .permissions import assert_client_access, is_owner, is_admin, is_manager, is_bookkeeper
 
 from .models import (
     Client,
@@ -79,6 +82,27 @@ async def list_clients(
     current_user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.Client)
+
+    # Access control (internal staff + portal users):
+    # - Owner/Admin see all clients
+    # - Manager sees clients where manager_id == user.id
+    # - Bookkeeper sees clients where bookkeeper_id == user.id
+    # - Portal users see clients via ClientUserAccess
+    if not (is_owner(current_user) or is_admin(current_user)):
+        query = (
+            query.outerjoin(
+                models.ClientUserAccess,
+                models.ClientUserAccess.client_id == models.Client.id,
+            )
+            .filter(
+                or_(
+                    models.Client.manager_id == current_user.id,
+                    models.Client.bookkeeper_id == current_user.id,
+                    models.ClientUserAccess.user_id == current_user.id,
+                )
+            )
+            .distinct()
+        )
 
     if q:
         query = query.filter(models.Client.legal_name.ilike(f"%{q}%"))
@@ -153,19 +177,30 @@ def create_default_recurring_tasks_for_client(
         db.add(rt)
         db.flush()  # get rt.id without committing yet
 
-        # Create the first actual Task instance for this rule
+        # Create the first actual Task instance for this rule (due today)
+        due = rt.next_run
         task = models.Task(
             title=rt.name,
             description=rt.description or "",
             status=rt.default_status,
-            due_date=rt.next_run,
+            due_date=due,
             assigned_user_id=rt.assigned_user_id,
             client_id=rt.client_id,
             recurring_task_id=rt.id,
+            task_type="recurring",
         )
-    db.add(task)
-    
-# One commit for all rules + tasks
+        db.add(task)
+
+        # Advance next_run so the recurring runner doesn't double-create for the same date
+        rt.next_run = advance_next_run(
+            rt.schedule_type,
+            due,
+            day_of_month=rt.day_of_month,
+            weekday=rt.weekday,
+            week_of_month=rt.week_of_month,
+        )
+
+    # One commit for all rules + tasks
     db.commit()
 
 @router.post("/", response_model=schemas.ClientOut, status_code=status.HTTP_201_CREATED)
@@ -196,9 +231,7 @@ async def get_client(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = assert_client_access(db, current_user, client_id)
     return client
 
 
@@ -209,9 +242,10 @@ async def update_client(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = assert_client_access(db, current_user, client_id)
+
+    if (current_user.role or '').strip().lower() == 'client':
+        raise HTTPException(status_code=403, detail='Clients cannot edit client records')
 
     # Work on a mutable dict of just the fields that were actually sent
     data = client_in.dict(exclude_unset=True)

@@ -63,6 +63,20 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    # Access control:
+    # - If client_id or account_id is provided, user must have access to that client
+    # - Otherwise, only owner/admin can list all documents
+    role = (current_user.role or "").strip().lower()
+    if client_id is not None:
+        assert_client_access(db, current_user, client_id)
+    elif account_id is not None:
+        acct = db.query(models.Account).filter(models.Account.id == account_id).first()
+        if not acct:
+            raise HTTPException(status_code=404, detail="Account not found")
+        assert_client_access(db, current_user, acct.client_id)
+    elif role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Not authorized to list all documents")
+
     q = db.query(models.Document)
 
     if client_id is not None:
@@ -228,6 +242,8 @@ def download_document(
     doc = db.query(models.Document).get(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    assert_client_access(db, current_user, doc.client_id)
 
     abs_path = _abs_doc_path(db, doc.stored_path)
     if not abs_path.exists():

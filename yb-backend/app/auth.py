@@ -1,4 +1,5 @@
 # app/auth.py
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -10,7 +11,9 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from . import models, schemas
 
-SECRET_KEY = "CHANGE_THIS_FOR_REAL_DEPLOYMENT"
+SECRET_KEY = os.getenv("YB_SECRET_KEY") or ""
+if not SECRET_KEY:
+    raise RuntimeError("YB_SECRET_KEY environment variable is not set")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

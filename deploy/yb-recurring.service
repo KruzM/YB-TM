@@ -1,0 +1,8 @@
+[Unit]
+Description=Yecny OS Recurring Task Runner
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/kruzer04/YBTM/YB-TM/yb-backend
+EnvironmentFile=/home/kruzer04/YBTM/YB-TM/.env
+ExecStart=/home/kruzer04/YBTM/YB-TM/venv/bin/python -m app.run_recurring

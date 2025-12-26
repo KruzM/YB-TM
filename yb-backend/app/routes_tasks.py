@@ -10,6 +10,7 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
 from .onboarding import release_onboarding_tasks_if_ready
+from .permissions import assert_client_access
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -236,6 +237,23 @@ def _ensure_task_visible(task_id: int, db: Session, current_user: models.User) -
     if task.assigned_user_id == current_user.id:
         return task
 
+    # if task is tied to a client, allow access if the user can access that client
+    if task.client_id:
+        try:
+            assert_client_access(db, current_user, task.client_id)
+            return task
+        except HTTPException:
+            pass
+
+    raise HTTPException(status_code=404, detail="Task not found")
+
+    if _is_privileged(current_user):
+        return task
+
+    # assigned user can always see
+    if task.assigned_user_id == current_user.id:
+        return task
+
     # if task is tied to a client, allow that client's manager/bookkeeper to see
     if task.client_id:
         client = db.query(models.Client).filter(models.Client.id == task.client_id).first()
@@ -362,22 +380,6 @@ async def create_note(
 
 
 # --------- Helper ----------
-
-def _ensure_task_visible(task_id: int, db: Session, current_user: models.User) -> None:
-    """
-    Ensure the task exists and belongs to the current user.
-    Raises 404 if not visible.
-    """
-    task = (
-        db.query(models.Task)
-        .filter(
-            models.Task.id == task_id,
-            models.Task.assigned_user_id == current_user.id,
-        )
-        .first()
-    )
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
 
 def _is_privileged(user: models.User) -> bool:
     role = (user.role or "").strip().lower()

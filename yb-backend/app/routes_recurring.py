@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_manager_or_admin
+from .recurring_utils import advance_next_run
 
 router = APIRouter(prefix="/recurring-tasks", tags=["recurring tasks"])
 
@@ -81,7 +82,16 @@ def create_recurring_task(
     db.add(rule)
     db.flush()  # Get rule.id populated
     # Create the initial concrete task for next_run
+    due = rule.next_run
     _create_task_from_rule(db, rule)
+
+    rule.next_run = advance_next_run(
+        rule.schedule_type,
+        due,
+        day_of_month=rule.day_of_month,
+        weekday=rule.weekday,
+        week_of_month=rule.week_of_month,
+    )
 
     db.commit()
     db.refresh(rule)
