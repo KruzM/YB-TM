@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from .database import get_db 
-from .auth import require_admin, get_current_user  
+from .auth import require_admin, get_current_user ,require_admin_or_owner
 
 from .models import OnboardingTemplateTask, User
 from .schemas import (
@@ -19,9 +19,9 @@ router = APIRouter(prefix="/onboarding-templates", tags=["onboarding-templates"]
 @router.get("/", response_model=List[OnboardingTemplateTaskOut])
 def list_templates(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_or_owner),
 ):
-    require_admin(current_user)
+    
 
     templates = (
         db.query(OnboardingTemplateTask)
@@ -38,9 +38,9 @@ def list_templates(
 def create_template(
     payload: OnboardingTemplateTaskCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+     current_user: User = Depends(require_admin_or_owner),
 ):
-    require_admin(current_user)
+ 
 
     tmpl = OnboardingTemplateTask(**payload.dict())
     db.add(tmpl)
@@ -54,9 +54,9 @@ def update_template(
     template_id: int,
     payload: OnboardingTemplateTaskUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+     current_user: User = Depends(require_admin_or_owner),
 ):
-    require_admin(current_user)
+ 
 
     tmpl = db.query(OnboardingTemplateTask).get(template_id)
     if not tmpl:
@@ -74,9 +74,9 @@ def update_template(
 def delete_template(
     template_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_or_owner),
 ):
-    require_admin(current_user)
+    
 
     tmpl = db.query(OnboardingTemplateTask).get(template_id)
     if not tmpl:

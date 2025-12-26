@@ -9,6 +9,7 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user,require_admin, require_owner, require_staff
 from .onboarding import create_onboarding_tasks_for_client as create_onboarding_tasks_helper
+from .audit import log_event
 
 from .models import (
     Client,
@@ -162,9 +163,9 @@ def create_default_recurring_tasks_for_client(
             client_id=rt.client_id,
             recurring_task_id=rt.id,
         )
-        db.add(task)
-
-    # One commit for all rules + tasks
+    db.add(task)
+    
+# One commit for all rules + tasks
     db.commit()
 
 @router.post("/", response_model=schemas.ClientOut, status_code=status.HTTP_201_CREATED)
@@ -429,7 +430,15 @@ def approve_and_execute_client_purge(
 
         # 6) Finally delete the client row
         db.delete(client)
-
+        log_event(
+            db,
+            actor_user_id=current_user.id,
+            action="client.purge.executed",
+            entity_type="client",
+            entity_id=client_id,
+            client_id=client_id,
+            meta={"purge_request_id": request_id},
+        )
         db.commit()
         return {"message": "Client and related data purged successfully."}
 

@@ -11,6 +11,8 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     UniqueConstraint,
+    JSON,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
@@ -514,3 +516,47 @@ class ClientUserAccess(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (UniqueConstraint("client_id", "user_id", name="uq_client_user"),)
+
+
+# ----------- Admin App Settings -----------
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True, nullable=False)
+
+    # Store JSON (string, number, bool, list, dict)
+    value = Column(JSON, nullable=False)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Who did it
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # What happened
+    action = Column(String, nullable=False, index=True)  # e.g. "client.update"
+
+    # What object it affected
+    entity_type = Column(String, nullable=False, index=True)  # "client", "task", "document", ...
+    entity_id = Column(Integer, nullable=True, index=True)
+
+    # Useful for filtering audit by client
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
+
+    # Extra details (diff, notes, payload)
+    meta = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+Index("ix_audit_events_client_created", AuditEvent.client_id, AuditEvent.created_at)
+Index("ix_audit_events_action_created", AuditEvent.action, AuditEvent.created_at)

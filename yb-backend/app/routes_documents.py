@@ -1,6 +1,8 @@
 # app/routes_documents.py
 from typing import List, Optional
 from pathlib import Path
+from datetime import date
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse
@@ -9,13 +11,46 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_admin
-from datetime import date
-
+from .models import AppSetting
 from .permissions import assert_client_upload_allowed
+
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-# Adjust this base path to match your actual documents directory
-BASE_DOCS_DIR = Path("/home/kruzer04/YBTM/YB-TM/docs")
+# Default docs path (used if no app_setting exists)
+DEFAULT_DOCS_DIR = Path("/home/kruzer04/YBTM/YB-TM/docs")
+
+
+def _safe_folder_name(name: str) -> str:
+    """
+    Sanitize folder names so client/account names can't break paths.
+    """
+    name = (name or "").strip()
+    name = re.sub(r"[\\/]+", "_", name)              # remove slashes
+    name = re.sub(r"[^a-zA-Z0-9 _.-]", "", name)     # remove odd chars
+    return name.strip() or "Client"
+
+
+def _get_docs_root(db: Session) -> Path:
+    """
+    Returns the docs root path from app_settings.docs_root_path if set,
+    otherwise DEFAULT_DOCS_DIR.
+    """
+    row = db.query(AppSetting).filter(AppSetting.key == "docs_root_path").first()
+    if row and isinstance(row.value, str) and row.value.strip():
+        return Path(row.value).expanduser()
+    return DEFAULT_DOCS_DIR
+def _abs_doc_path(db: Session, stored_path: str) -> Path:
+    """
+    Convert a stored_path (relative preferred) into an absolute Path under docs_root.
+    If an old record accidentally stored an absolute path, we still allow it.
+    """
+    p = Path(stored_path)
+
+    # If legacy absolute path exists, use it directly
+    if p.is_absolute():
+        return p
+
+    return _get_docs_root(db) / p
 
 
 @router.get("/", response_model=List[schemas.DocumentOut])
@@ -29,6 +64,7 @@ def list_documents(
     current_user: models.User = Depends(get_current_user),
 ):
     q = db.query(models.Document)
+
     if client_id is not None:
         q = q.filter(models.Document.client_id == client_id)
     if account_id is not None:
@@ -46,9 +82,11 @@ def list_documents(
         models.Document.year.asc(),
         models.Document.month.asc(),
     ).all()
-
-
-@router.post("/upload", response_model=schemas.DocumentOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/upload",
+    response_model=schemas.DocumentOut,
+    status_code=status.HTTP_201_CREATED,
+)
 async def upload_document(
     client_id: int = Form(...),
     account_id: int = Form(...),
@@ -57,7 +95,9 @@ async def upload_document(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    # Enforce client upload permissions (supports future client portal rules)
     assert_client_upload_allowed(db, current_user, client_id)
+
     account = db.query(models.Account).get(account_id)
     if not account or account.client_id != client_id:
         raise HTTPException(status_code=400, detail="Invalid account/client combo")
@@ -70,11 +110,9 @@ async def upload_document(
     month = statement_date.month
     day = statement_date.day
 
-    client_folder = BASE_DOCS_DIR / f"{client.legal_name}"
-    stmt_folder = client_folder / "Statements"
-    account_folder = stmt_folder / (account.name or f"Account-{account.id}")
-    year_folder = account_folder / str(year)
-    year_folder.mkdir(parents=True, exist_ok=True)
+    docs_root = _get_docs_root(db)
+    client_folder = _safe_folder_name(client.legal_name)
+    account_folder_name = _safe_folder_name(account.name or f"Account-{account.id}")
 
     month_str = f"{month:02d}"
     day_str = f"{day:02d}"
@@ -82,9 +120,18 @@ async def upload_document(
     ext = Path(file.filename).suffix or ".pdf"
     stored_filename = f"{month_str}{day_str}{year_two}{ext}"
 
-    stored_path = year_folder / stored_filename
+    # Store RELATIVE path in DB (NAS-ready)
+    relative_path = (
+        Path(client_folder)
+        / "Statements"
+        / account_folder_name
+        / str(year)
+        / stored_filename
+    )
+    abs_path = docs_root / relative_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with stored_path.open("wb") as f:
+    with abs_path.open("wb") as f:
         f.write(await file.read())
 
     doc = models.Document(
@@ -97,7 +144,7 @@ async def upload_document(
         day=day,
         original_filename=file.filename,
         stored_filename=stored_filename,
-        stored_path=str(stored_path),
+        stored_path=str(relative_path),  # <-- RELATIVE stored
         uploaded_by=current_user.id,
     )
     db.add(doc)
@@ -105,59 +152,6 @@ async def upload_document(
     db.refresh(doc)
     return doc
 
-
-@router.get("/{document_id}/download")
-def download_document(
-    document_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    """
-    Return the file to the browser for viewing/downloading.
-    """
-    doc = db.query(models.Document).get(document_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    path = Path(doc.stored_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
-
-    #key part: force inline instead of attachment
-    return FileResponse(
-        path,
-        media_type="application/pdf",
-        filename=doc.stored_filename,  # or doc.original_filename
-        content_disposition_type="inline",
-    )
-
-
-
-@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(
-    document_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(require_admin),
-):
-    """
-    Delete a document and its file from disk.
-    Admin only.
-    """
-    doc = db.query(models.Document).get(document_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    path = Path(doc.stored_path)
-    if path.exists():
-        try:
-            path.unlink()
-        except OSError:
-            # If file deletion fails, still remove DB record, but you could log this.
-            pass
-
-    db.delete(doc)
-    db.commit()
-    return None
 
 @router.post(
     "/upload-general",
@@ -173,6 +167,7 @@ async def upload_general_document(
     current_user: models.User = Depends(get_current_user),
 ):
     assert_client_upload_allowed(db, current_user, client_id)
+
     client = db.query(models.Client).get(client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -181,20 +176,28 @@ async def upload_general_document(
     month = document_date.month
     day = document_date.day
 
-    client_folder = BASE_DOCS_DIR / f"{client.legal_name}"
-    docs_root = client_folder / "Documents"
-    target_folder = docs_root / (folder or str(year))
-    target_folder.mkdir(parents=True, exist_ok=True)
+    docs_root = _get_docs_root(db)
+    client_folder = _safe_folder_name(client.legal_name)
 
     month_str = f"{month:02d}"
     day_str = f"{day:02d}"
     year_two = str(year)[-2:]
     ext = Path(file.filename).suffix or ".pdf"
     stored_filename = f"{month_str}{day_str}{year_two}{ext}"
+    # folder can be like "Payroll" or "Tax" etc.
+    safe_folder = _safe_folder_name(folder) if folder else str(year)
 
-    stored_path = target_folder / stored_filename
+    relative_path = (
+        Path(client_folder)
+        / "Documents"
+        / safe_folder
+        / stored_filename
+    )
 
-    with stored_path.open("wb") as f:
+    abs_path = docs_root / relative_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with abs_path.open("wb") as f:
         f.write(await file.read())
 
     doc = models.Document(
@@ -207,10 +210,56 @@ async def upload_general_document(
         day=day,
         original_filename=file.filename,
         stored_filename=stored_filename,
-        stored_path=str(stored_path),
+        stored_path=str(relative_path),  # <-- RELATIVE stored
         uploaded_by=current_user.id,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
     return doc
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    doc = db.query(models.Document).get(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    abs_path = _abs_doc_path(db, doc.stored_path)
+    if not abs_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    # Force inline viewing
+    return FileResponse(
+        abs_path,
+        media_type="application/pdf",
+        filename=doc.stored_filename,
+        content_disposition_type="inline",
+    )
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin),
+):
+    doc = db.query(models.Document).get(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    abs_path = _abs_doc_path(db, doc.stored_path)
+    if abs_path.exists():
+        try:
+            abs_path.unlink()
+        except OSError:
+            # If file deletion fails, still remove DB record
+            pass
+
+    db.delete(doc)
+    db.commit()
+    return None

@@ -3,17 +3,28 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import "./index.css";
+
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
+import RequireRole from "./components/RequireRole";
+
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
 import Clients from "./pages/Clients";
-import AppLayout from "./layout/AppLayout";
+import Contacts from "./pages/Contacts";
 import ClientDetail from "./pages/ClientDetail";
 import ClientIntake from "./pages/ClientIntake";
 import ClientIntakeList from "./pages/ClientIntakeList";
-import Contacts from "./pages/Contacts";
+
+import AppLayout from "./layout/AppLayout";
+
+import AdminLayout from "./pages/admin/AdminLayout";
+import AdminOrg from "./pages/admin/AdminOrg";
+import AdminUsers from "./pages/admin/AdminUsers";
+import AdminOnboardingTemplates from "./pages/admin/AdminOnboardingTemplates";
+import AdminAudit from "./pages/admin/AdminAudit";
+
 function SettingsPage() {
 	return <div className="text-sm text-yecny-slate">Settings (coming soon)</div>;
 }
@@ -23,6 +34,10 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 		<BrowserRouter>
 			<AuthProvider>
 				<Routes>
+					{/* Public */}
+					<Route path="/login" element={<Login />} />
+
+					{/* Protected App Shell */}
 					<Route
 						path="/"
 						element={
@@ -31,6 +46,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 							</ProtectedRoute>
 						}
 					>
+						{/* Main app */}
 						<Route index element={<Dashboard />} />
 						<Route path="tasks" element={<Tasks />} />
 						<Route path="clients" element={<Clients />} />
@@ -39,13 +55,29 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 						<Route path="clients/intake" element={<ClientIntakeList />} />
 						<Route path="clients/intake/new" element={<ClientIntake />} />
 						<Route
-							path="/clients/intake/:intakeId/edit"
+							path="clients/intake/:intakeId/edit"
 							element={<ClientIntake />}
 						/>
 						<Route path="settings" element={<SettingsPage />} />
-					</Route>
 
-					<Route path="/login" element={<Login />} />
+						{/* Admin portal */}
+						<Route
+							path="admin"
+							element={
+								<RequireRole roles={["admin", "owner"]}>
+									<AdminLayout />
+								</RequireRole>
+							}
+						>
+							<Route index element={<AdminOrg />} />
+							<Route path="users" element={<AdminUsers />} />
+							<Route
+								path="onboarding-templates"
+								element={<AdminOnboardingTemplates />}
+							/>
+							<Route path="audit" element={<AdminAudit />} />
+						</Route>
+					</Route>
 				</Routes>
 			</AuthProvider>
 		</BrowserRouter>

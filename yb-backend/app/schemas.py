@@ -1,8 +1,8 @@
 # app/schemas.py
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, EmailStr, constr, ConfigDict
 
 
 # ---------- User ----------
@@ -24,6 +24,15 @@ class UserOut(UserBase):
         # pydantic v2 equivalent of orm_mode=True
         from_attributes = True
 
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class UserPasswordResetIn(BaseModel):
+    password: Optional[str] = None
 
 # ---------- Auth ----------
 class TokenData(BaseModel):
@@ -99,7 +108,8 @@ class TaskSubtaskOut(TaskSubtaskBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)
+
 
 
 class TaskNoteBase(BaseModel):
@@ -116,7 +126,8 @@ class TaskNoteOut(TaskNoteBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        model_config = ConfigDict(from_attributes=True)
+
 
 # ---------- Recurring Task ----------
 
@@ -526,3 +537,31 @@ class ContactOut(ContactBase):
 
     class Config:
         from_attributes = True
+
+# ---------- App Settings ----------
+class AppSettingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    value: Any
+    updated_at: Optional[datetime] = None
+    updated_by_id: Optional[int] = None
+
+class AppSettingUpsert(BaseModel):
+    value: Any
+
+class AppSettingsBulkUpsert(BaseModel):
+    settings: Dict[str, Any]
+
+# ---------- Audit Notes ----------
+class AuditEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    actor_user_id: int
+    action: str
+    entity_type: str
+    entity_id: Optional[int] = None
+    client_id: Optional[int] = None
+    meta: Optional[Dict[str, Any]] = None
+    created_at: datetime

@@ -1,17 +1,20 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
-const navItems = [
-	{ to: "/", label: "Dashboard" },
-	{ to: "/tasks", label: "Tasks" },
-	{ to: "/clients", label: "Clients" },
-	{ to: "/settings", label: "Settings" },
-	{ to: "/clients/intake", label: "Client Intake" },
-	{ to: "/contacts", label: "Contacts" },
-];
-
 export default function AppLayout() {
 	const { user, logout } = useAuth();
+	const role = (user?.role || "").toLowerCase();
+	const isAdminOrOwner = role === "admin" || role === "owner";
+
+	const navItems = [
+		{ to: "/", label: "Dashboard" },
+		{ to: "/tasks", label: "Tasks" },
+		{ to: "/clients", label: "Clients" },
+		{ to: "/clients/intake", label: "Client Intake" },
+		{ to: "/contacts", label: "Contacts" },
+		{ to: "/settings", label: "Settings" },
+		...(isAdminOrOwner ? [{ to: "/admin", label: "Admin" }] : []),
+	];
 
 	return (
 		<div className="min-h-screen flex bg-yecny-bg">
@@ -46,7 +49,6 @@ export default function AppLayout() {
 					))}
 				</nav>
 			</aside>
-
 			{/* Main content */}
 			<div className="flex-1 flex flex-col">
 				{/* Top Bar */}
