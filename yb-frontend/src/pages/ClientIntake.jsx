@@ -41,6 +41,7 @@ const initialFormState = {
 	business_address: "",
 	tax_structure: "",
 	owners: "",
+	tax_id: "",
 
 	// Primary contact
 	primary_contact_name: "",
@@ -100,6 +101,8 @@ const initialFormState = {
 	payroll_state_local_payments: false,
 	payroll_calculate_hours_commission: false,
 
+	// Custom Recurring Rules
+	custom_recurring_rules: [],
 	// Misc
 	additional_notes: "",
 };
@@ -272,6 +275,7 @@ export default function ClientIntake() {
 					dba_name,
 					business_address,
 					tax_structure,
+					tax_id,
 					owners,
 					primary_contact_name,
 					primary_contact_email,
@@ -305,7 +309,7 @@ export default function ClientIntake() {
 					payroll_quarterly_filings,
 					payroll_state_local_payments,
 					payroll_calculate_hours_commission,
-
+					custom_recurring_rules,
 					additional_notes,
 				} = intake;
 
@@ -330,6 +334,7 @@ export default function ClientIntake() {
 					...prev,
 					legal_name: legal_name || "",
 					dba_name: dba_name || "",
+					tax_id: tax_id || "",
 					business_address: business_address || "",
 					tax_structure: tax_structure || "",
 					owners: owners || "",
@@ -403,7 +408,9 @@ export default function ClientIntake() {
 					payroll_state_local_payments: !!payroll_state_local_payments,
 					payroll_calculate_hours_commission:
 						!!payroll_calculate_hours_commission,
-
+					custom_recurring_rules: Array.isArray(custom_recurring_rules)
+						? custom_recurring_rules
+						: [],
 					additional_notes: additional_notes || "",
 				}));
 
@@ -530,6 +537,7 @@ export default function ClientIntake() {
 			legal_name: form.legal_name.trim(),
 			dba_name: form.dba_name.trim() || null,
 			business_address: form.business_address.trim() || null,
+			tax_id: form.tax_id.trim() || null,
 			tax_structure: form.tax_structure.trim() || null,
 			owners: form.owners.trim() || null,
 
@@ -618,6 +626,7 @@ export default function ClientIntake() {
 			payroll_state_local_payments: form.payroll_state_local_payments,
 			payroll_calculate_hours_commission:
 				form.payroll_calculate_hours_commission,
+			custom_recurring_rules: form.custom_recurring_rules || [],
 			additional_notes: additional || null,
 		};
 	};
@@ -718,6 +727,37 @@ export default function ClientIntake() {
 	if (loading) {
 		return <div className="text-xs text-yecny-slate">Loading intake...</div>;
 	}
+	const addCustomRecurringRule = () => {
+		setForm((prev) => ({
+			...prev,
+			custom_recurring_rules: [
+				...(prev.custom_recurring_rules || []),
+				{
+					title: "",
+					description: "",
+					schedule_type: "monthly",
+					day_of_month: 25,
+					assigned_user_id: "",
+				},
+			],
+		}));
+	};
+
+	const updateCustomRecurringRule = (idx, field, value) => {
+		setForm((prev) => {
+			const copy = [...(prev.custom_recurring_rules || [])];
+			copy[idx] = { ...copy[idx], [field]: value };
+			return { ...prev, custom_recurring_rules: copy };
+		});
+	};
+
+	const removeCustomRecurringRule = (idx) => {
+		setForm((prev) => {
+			const copy = [...(prev.custom_recurring_rules || [])];
+			copy.splice(idx, 1);
+			return { ...prev, custom_recurring_rules: copy };
+		});
+	};
 	return (
 		<div className="space-y-5">
 			{/* Header */}
@@ -813,6 +853,19 @@ export default function ClientIntake() {
 								value={form.tax_structure}
 								onChange={handleChange}
 								placeholder="Single-member LLC, S-Corp, Partnership..."
+								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+							/>
+						</div>
+						<div>
+							<label className="block text-xs font-medium text-yecny-slate mb-1">
+								Tax ID (EIN, SSN, etc.)
+							</label>
+							<input
+								type="text"
+								name="tax_id"
+								value={form.tax_id}
+								onChange={handleChange}
+								placeholder="Employer Identification Number or SSN"
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
 						</div>
@@ -1832,6 +1885,143 @@ export default function ClientIntake() {
 						</div>
 					</div>
 				</section>
+				{/* Custom recurring rules */}
+				<section className="space-y-4">
+					<div>
+						<h2 className="text-sm font-semibold text-yecny-charcoal">
+							Custom recurring tasks
+						</h2>
+						<p className="text-xs text-yecny-slate mt-1">
+							Add any client-specific recurring work that should start after
+							onboarding.
+						</p>
+					</div>
+
+					<div className="space-y-3">
+						{(form.custom_recurring_rules || []).map((r, idx) => (
+							<div
+								key={idx}
+								className="border border-slate-200 rounded-lg p-3 bg-slate-50/40 space-y-2"
+							>
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+									<div className="md:col-span-1">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Task name
+										</label>
+										<input
+											value={r.title || ""}
+											onChange={(e) =>
+												updateCustomRecurringRule(idx, "title", e.target.value)
+											}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+											placeholder="Example: Send sales tax summary"
+										/>
+									</div>
+
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Schedule
+										</label>
+										<select
+											value={r.schedule_type || "monthly"}
+											onChange={(e) =>
+												updateCustomRecurringRule(
+													idx,
+													"schedule_type",
+													e.target.value
+												)
+											}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+										>
+											<option value="monthly">Monthly</option>
+											<option value="quarterly">Quarterly</option>
+											<option value="annual">Annual</option>
+										</select>
+									</div>
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Day of month
+										</label>
+										<input
+											type="number"
+											min="1"
+											max="31"
+											value={r.day_of_month ?? 25}
+											onChange={(e) =>
+												updateCustomRecurringRule(
+													idx,
+													"day_of_month",
+													Number(e.target.value || 25)
+												)
+											}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+										/>
+									</div>
+
+									<div className="md:col-span-2">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Description (optional)
+										</label>
+										<input
+											value={r.description || ""}
+											onChange={(e) =>
+												updateCustomRecurringRule(
+													idx,
+													"description",
+													e.target.value
+												)
+											}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+											placeholder="Notes for the assigned person"
+										/>
+									</div>
+
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Assign to
+										</label>
+										<select
+											value={r.assigned_user_id || ""}
+											onChange={(e) =>
+												updateCustomRecurringRule(
+													idx,
+													"assigned_user_id",
+													e.target.value ? Number(e.target.value) : ""
+												)
+											}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+										>
+											<option value="">Unassigned</option>
+											{users.map((u) => (
+												<option key={u.id} value={u.id}>
+													{u.name} ({u.role})
+												</option>
+											))}
+										</select>
+									</div>
+								</div>
+
+								<div className="flex justify-end">
+									<button
+										type="button"
+										onClick={() => removeCustomRecurringRule(idx)}
+										className="text-[11px] text-red-600 hover:underline"
+									>
+										Remove
+									</button>
+								</div>
+							</div>
+						))}{" "}
+						<button
+							type="button"
+							onClick={addCustomRecurringRule}
+							className="text-[11px] text-yecny-primary hover:underline"
+						>
+							+ Add recurring task
+						</button>
+					</div>
+				</section>
+
 				{/* Additional notes */}
 				<section className="space-y-4">
 					<div>

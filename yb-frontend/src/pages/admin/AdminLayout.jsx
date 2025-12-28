@@ -5,6 +5,7 @@ const adminNav = [
 	{ to: "/admin/users", label: "Users" },
 	{ to: "/admin/onboarding-templates", label: "Onboarding Templates" },
 	{ to: "/admin/audit", label: "Audit Log" },
+	{ to: "/admin/recurring-templates", label: "Recurring Templates" },
 ];
 
 export default function AdminLayout() {

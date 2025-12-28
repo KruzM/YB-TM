@@ -1,8 +1,9 @@
 # app/schemas.py
 from datetime import datetime, date
 from typing import Optional, List, Any, Dict
+import json
+from pydantic import BaseModel, EmailStr, constr, ConfigDict, field_validator
 
-from pydantic import BaseModel, EmailStr, constr, ConfigDict
 
 
 # ---------- User ----------
@@ -130,6 +131,12 @@ class TaskNoteOut(TaskNoteBase):
 
 
 # ---------- Recurring Task ----------
+class RecurringRuleDraft(BaseModel):
+    title: str
+    description: Optional[str] = None
+    schedule_type: str = "monthly"
+    day_of_month: Optional[int] = None
+    assigned_user_id: Optional[int] = None
 
 class RecurringTaskBase(BaseModel):
     name: str
@@ -175,10 +182,56 @@ class RecurringTaskOut(RecurringTaskBase):
     class Config:
         from_attributes = True
 
+# ---------- Recurring Template Task (admin rules) ----------
+
+class RecurringTemplateTaskBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+    # 'client_frequency', 'monthly', 'quarterly', 'annual'
+    schedule_type: str = "client_frequency"
+
+    day_of_month: Optional[int] = None
+    weekday: Optional[int] = None
+    week_of_month: Optional[int] = None
+
+    initial_delay_days: int = 21
+    default_assigned_role: Optional[str] = None  # 'bookkeeper'|'manager'|'admin'|None
+    default_status: str = "open"
+
+    order_index: int = 0
+    is_active: bool = True
+
+
+class RecurringTemplateTaskCreate(RecurringTemplateTaskBase):
+    pass
+
+
+class RecurringTemplateTaskUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    schedule_type: Optional[str] = None
+    day_of_month: Optional[int] = None
+    weekday: Optional[int] = None
+    week_of_month: Optional[int] = None
+    initial_delay_days: Optional[int] = None
+    default_assigned_role: Optional[str] = None
+    default_status: Optional[str] = None
+    order_index: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class RecurringTemplateTaskOut(RecurringTemplateTaskBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
 # ---------- Client ----------
 class ClientBase(BaseModel):
     legal_name: str
     dba_name: Optional[str] = None
+    tax_id: Optional[str] = None  # EIN or SSN
     tier: Optional[str] = None
     billing_frequency: Optional[str] = None
     bookkeeping_frequency: Optional[str] = None
@@ -200,6 +253,7 @@ class ClientCreate(ClientBase):
 class ClientUpdate(BaseModel):
     legal_name: Optional[str] = None
     dba_name: Optional[str] = None
+    tax_id: Optional[str] = None
     tier: Optional[str] = None
     billing_frequency: Optional[str] = None
     bookkeeping_frequency: Optional[str] = None
@@ -256,9 +310,25 @@ class IntakeConvertIn(BaseModel):
 
 # ---------- Client Intake ----------
 class ClientIntakeBase(BaseModel):
+    @field_validator("custom_recurring_rules", mode="before")
+    @classmethod
+    def _parse_custom_rules(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return json.loads(s)
+            except Exception:
+                return None
+        return v
     # Basic business info
     legal_name: str
     dba_name: Optional[str] = None
+    tax_id: Optional[str] = None  # EIN or SSN
+    custom_recurring_rules: Optional[List[RecurringRuleDraft]] = None  # JSON-encoded custom rules
     business_address: Optional[str] = None
     tax_structure: Optional[str] = None
     owners: Optional[str] = None  # "Alice 60%, Bob 40%"
@@ -333,6 +403,7 @@ class ClientIntakeUpdate(BaseModel):
 
     legal_name: Optional[str] = None
     dba_name: Optional[str] = None
+    tax_id: Optional[str] = None
     business_address: Optional[str] = None
     tax_structure: Optional[str] = None
     owners: Optional[str] = None
@@ -383,6 +454,7 @@ class ClientIntakeUpdate(BaseModel):
     payroll_state_local_payments: Optional[bool] = None
     payroll_calculate_hours_commission: Optional[bool] = None
 
+    custom_recurring_rules: Optional[List[RecurringRuleDraft]] = None
     additional_notes: Optional[str] = None
 
 

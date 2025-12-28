@@ -12,7 +12,8 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_admin
 from .models import AppSetting
-from .permissions import assert_client_upload_allowed
+from .permissions import assert_client_upload_allowed, assert_client_access
+
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 

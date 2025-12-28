@@ -77,6 +77,7 @@ class Client(Base):
     id = Column(Integer, primary_key=True, index=True)
     legal_name = Column(String, nullable=False)
     dba_name = Column(String, nullable=True)
+    tax_id = Column(String, nullable=True)  # EIN or SSN
     tier = Column(String, nullable=True)  # monthly / quarterly / annual / etc.
     billing_frequency = Column(String, nullable=True)
     bookkeeping_frequency = Column(String, nullable=True)
@@ -192,6 +193,7 @@ class ClientIntake(Base):
     dba_name = Column(String, nullable=True)
     business_address = Column(String, nullable=True)
     tax_structure = Column(String, nullable=True)  # LLC, S-Corp, etc.
+    tax_id = Column(String, nullable=True)  # EIN or SSN
     owners = Column(Text, nullable=True)  # free-text description of owners & %s
 
     # Contacts
@@ -262,7 +264,10 @@ class ClientIntake(Base):
     payroll_quarterly_filings = Column(Boolean, default=False, nullable=False)
     payroll_state_local_payments = Column(Boolean, default=False, nullable=False)
     payroll_calculate_hours_commission = Column(Boolean, default=False, nullable=False)
-
+      
+    # Custom recurring rules added during intake (stored as JSON)
+    # Example: [{"title":"Payroll","schedule_type":"monthly","day_of_month":5,"assigned_user_id":12,"description":"..."}]
+    custom_recurring_rules = Column(JSON, nullable=True)
     # Misc
     additional_notes = Column(Text, nullable=True)
     
@@ -328,6 +333,8 @@ class IntakeOwner(Base):
     intake = relationship("ClientIntake", backref="intake_owner_links")
     contact = relationship("Contact")
 
+
+
 class RecurringTask(Base):
     __tablename__ = "recurring_tasks"
 
@@ -360,6 +367,26 @@ class RecurringTask(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+
+class RecurringTemplateTask(Base):
+    __tablename__ = "recurring_template_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+
+    schedule_type = Column(String, nullable=False, default="client_frequency")
+    day_of_month = Column(Integer, nullable=True)
+    weekday = Column(Integer, nullable=True)
+    week_of_month = Column(Integer, nullable=True)
+
+    initial_delay_days = Column(Integer, nullable=False, default=21)
+    default_assigned_role = Column(String, nullable=True)
+    default_status = Column(String, default="open")
+
+    order_index = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    
 class OnboardingTemplateTask(Base):
     __tablename__ = "onboarding_template_tasks"
 

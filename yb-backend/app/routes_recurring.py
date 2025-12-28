@@ -1,9 +1,10 @@
 # app/routes_recurring.py
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
-
+import json
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, EmailStr, constr, ConfigDict, field_validator
 
 from .database import get_db
 from . import models, schemas
@@ -23,12 +24,13 @@ def _create_task_from_rule(
     """
     if not rule.next_run:
         raise ValueError("RecurringTask.next_run must be set to generate a task.")
+    due_dt = datetime.combine(rule.next_run, datetime.min.time())
 
     task = models.Task(
         title=rule.name,
         description=rule.description or "",
         status=rule.default_status or "new",
-        due_date=rule.next_run,
+        due_date=due_dt,
         assigned_user_id=rule.assigned_user_id,
         client_id=rule.client_id,
         recurring_task_id=rule.id,

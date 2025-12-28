@@ -1,7 +1,7 @@
 # app/run_recurring.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from .database import SessionLocal
@@ -10,13 +10,14 @@ from .recurring_utils import advance_next_run
 
 
 def _ensure_task_for_rule_and_date(db, rule: models.RecurringTask, due: date) -> bool:
-    """Return True if a new task was created."""
+    due_dt = datetime.combine(due, datetime.min.time())
+
     existing = (
         db.query(models.Task)
         .filter(
             models.Task.recurring_task_id == rule.id,
             models.Task.task_type == "recurring",
-            models.Task.due_date == due,
+            models.Task.due_date == due_dt,
         )
         .first()
     )
@@ -27,7 +28,7 @@ def _ensure_task_for_rule_and_date(db, rule: models.RecurringTask, due: date) ->
         title=rule.name,
         description=rule.description or "",
         status=rule.default_status or "new",
-        due_date=due,
+        due_date=due_dt,
         assigned_user_id=rule.assigned_user_id,
         client_id=rule.client_id,
         recurring_task_id=rule.id,
@@ -35,7 +36,6 @@ def _ensure_task_for_rule_and_date(db, rule: models.RecurringTask, due: date) ->
     )
     db.add(task)
     return True
-
 
 def run_once(today: Optional[date] = None) -> dict:
     today = today or date.today()

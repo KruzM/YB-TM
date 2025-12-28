@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user, require_admin
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from .onboarding import create_onboarding_tasks_for_client
 from .routes_clients import create_default_recurring_tasks_for_client
+import json
 
 router = APIRouter(prefix="/intake", tags=["client-intake"])
 
@@ -28,6 +29,10 @@ async def create_intake(
 
     # Dump everything from the schema
     data = intake_in.model_dump(exclude_unset=True)
+    # Normalize custom_recurring_rules to JSON string if it's a list/dict
+    if "custom_recurring_rules" in data and data["custom_recurring_rules"] is not None:
+        if isinstance(data["custom_recurring_rules"], (list, dict)):
+            data["custom_recurring_rules"] = json.dumps(data["custom_recurring_rules"])
 
     # Pull out owner_contact_ids so we DON'T try to pass it into ClientIntake(...)
     owner_ids = data.pop("owner_contact_ids", None) or []
@@ -140,6 +145,12 @@ async def update_intake(
 
     # Apply any fields that were sent
     update_data = intake_in.model_dump(exclude_unset=True)
+
+    # Normalize custom_recurring_rules to JSON string if it's a list/dict
+    if "custom_recurring_rules" in update_data and update_data["custom_recurring_rules"] is not None:
+        if isinstance(update_data["custom_recurring_rules"], (list, dict)):
+            update_data["custom_recurring_rules"] = json.dumps(update_data["custom_recurring_rules"])
+
     for field, value in update_data.items():
         setattr(intake, field, value)
 
@@ -191,7 +202,97 @@ def _to_int_or_none(value):
     except (TypeError, ValueError):
         return None
 
+def create_custom_recurring_tasks_from_intake(db, client, intake, created_by_user_id: int | None = None):
+    rules = getattr(intake, "custom_recurring_rules", None) or []
+    if isinstance(rules, str):
+        try:
+            rules = json.loads(rules) or []
+        except Exception:
+            rules = []
 
+    # resolve schedule type from client frequency
+    freq = (client.bookkeeping_frequency or "").lower()
+    if "quarter" in freq:
+        client_sched = "quarterly"
+    elif "annual" in freq or "year" in freq:
+        client_sched = "annual"
+    else:
+        client_sched = "monthly"
+
+    def fallback_assignee():
+        return client.bookkeeper_id or client.manager_id or created_by_user_id
+
+    for r in rules:
+        title = (r.get("title") or "").strip()
+        if not title:
+            continue
+
+        # prevent duplicates by rule name
+        existing_rule = (
+            db.query(models.RecurringTask)
+            .filter_by(client_id=client.id, name=title)
+            .first()
+        )
+        if existing_rule:
+            continue
+        schedule_type = (r.get("schedule_type") or "monthly").strip()
+        if schedule_type == "client_frequency":
+            schedule_type = client_sched
+
+        day_of_month = r.get("day_of_month")
+        assigned_user_id = r.get("assigned_user_id") or fallback_assignee()
+        description = r.get("description")
+
+        # start 2�4 weeks after conversion (default 21)
+        start_from = date.today() + timedelta(days=21)
+
+        first_due = advance_next_run(
+            schedule_type=schedule_type,
+            day_of_month=day_of_month or 25,
+            weekday=None,
+            week_of_month=None,
+            from_date=start_from,
+        )
+
+        rt = models.RecurringTask(
+            name=title,
+            description=description,
+            schedule_type=schedule_type,
+            day_of_month=day_of_month,
+            weekday=None,
+            week_of_month=None,
+            client_id=client.id,
+            assigned_user_id=assigned_user_id,
+            default_status="open",
+            next_run=first_due,
+            active=True,
+        )
+        db.add(rt)
+        db.flush()
+
+        due_dt = datetime.combine(first_due, datetime.min.time())
+
+        task = models.Task(
+            title=title,
+            description=description,
+            due_date=due_dt,
+            assigned_user_id=assigned_user_id,
+            client_id=client.id,
+            recurring_task_id=rt.id,
+            task_type="recurring",
+            status="open",
+        )
+        db.add(task)
+
+        # advance to next cycle
+        rt.next_run = advance_next_run(
+            schedule_type,
+            first_due,
+            day_of_month=rt.day_of_month,
+            weekday=rt.weekday,
+            week_of_month=rt.week_of_month,
+        )
+        db.commit()
 def create_accounts_from_intake(db, client, intake):
     """
     Auto-create Account records from an intake form.
@@ -403,14 +504,75 @@ async def convert_intake_to_client(
     create_contacts_from_intake(db, client, intake)
     create_accounts_from_intake(db, client, intake)
 
-    create_default_recurring_tasks_for_client(db, client, current_user)
-
+    create_default_recurring_tasks_for_client(db, client, created_by_user_id=current_user.id)
+    create_custom_recurring_tasks_from_intake(db, client, intake, created_by_user_id=current_user.id)
     create_onboarding_tasks_for_client(
         db=db,
         client=client,
         created_by_user_id=current_user.id,
     )
+    # Create custom recurring tasks from intake (if any)
+    raw = getattr(intake, "custom_recurring_rules", None)
+    if raw:
+        try:
+            rules = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            rules = []
 
+        # Import helper if you have it; otherwise inline your next-run logic in create_default_recurring...
+        from datetime import date, timedelta
+        from .recurring_utils import get_next_run_date  # <- adjust if your helper is elsewhere
+
+        for r in rules or []:
+            title = (r.get("title") or "").strip()
+            if not title:
+                continue
+
+            # idempotent: don't double-create
+            existing = (
+                db.query(models.RecurringTask)
+                .filter(models.RecurringTask.client_id == client.id)
+                .filter(models.RecurringTask.name == title)
+                .first()
+            )
+            if existing:
+                continue
+
+            schedule_type = (r.get("schedule_type") or "monthly").strip()
+            day_of_month = r.get("day_of_month") or 25
+            assigned_user_id = r.get("assigned_user_id") or client.bookkeeper_id or current_user.id
+
+            start_from = date.today() + timedelta(days=21)  # 2�4 week delay default
+            next_run = get_next_run_date(
+                schedule_type=schedule_type,
+                day_of_month=day_of_month,
+                from_date=start_from,
+            )
+
+            rt = models.RecurringTask(
+                name=title,
+                description=(r.get("description") or None),
+                schedule_type=schedule_type,
+                day_of_month=day_of_month,
+                client_id=client.id,
+                assigned_user_id=assigned_user_id,
+                default_status="open",
+                next_run=next_run,
+                active=True,
+            )
+            db.add(rt)
+            db.flush()
+
+            db.add(models.Task(
+                title=title,
+                description=(r.get("description") or None),
+                due_date=datetime.combine(next_run, datetime.min.time()),
+                assigned_user_id=assigned_user_id,
+                client_id=client.id,
+                recurring_task_id=rt.id,
+                task_type="recurring",
+                status="open",
+            ))
     if hasattr(intake, "client_id"):
         intake.client_id = client.id
     if hasattr(intake, "status"):

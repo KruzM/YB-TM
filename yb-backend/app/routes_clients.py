@@ -121,86 +121,148 @@ async def list_clients(
 
     return query.order_by(models.Client.legal_name).all()
 
-def create_default_recurring_tasks_for_client(
-    db: Session,
-    client: models.Client,
-    current_user: models.User,
-):
-    """
-    Create the standard recurring rules for a new client:
-    - Monthly Bank Feeds
-    - Monthly Reconciliations
-    - Monthly Questions
-    - Monthly Reports
+def create_default_recurring_tasks_for_client(db, client, created_by_user_id: int | None = None):
+    templates = (
+        db.query(models.RecurringTemplateTask)
+        .filter_by(is_active=True)
+        .order_by(models.RecurringTemplateTask.order_index.asc())
+        .all()
+    )
 
-    and generate the first task for each rule.
-    """
-
-    # Pick who should own these tasks by default
-    if client.bookkeeper_id:
-        assigned_id = client.bookkeeper_id
-    elif client.manager_id:
-        assigned_id = client.manager_id
-    else:
-        assigned_id = current_user.id
-
-    # Infer schedule type from bookkeeping_frequency, default to monthly
+    # Seed defaults if none exist
+    if not templates:
+        templates = [
+            models.RecurringTemplateTask(
+                name="Categorize Transactions",
+                schedule_type="client_frequency",
+                day_of_month=10,
+                initial_delay_days=21,
+                default_assigned_role="bookkeeper",
+                default_status="open",
+                order_index=10,
+                is_active=True,
+            ),
+            models.RecurringTemplateTask(
+                name="Reconcile Accounts",
+                schedule_type="client_frequency",
+                day_of_month=15,
+                initial_delay_days=21,
+                default_assigned_role="bookkeeper",
+                default_status="open",
+                order_index=20,
+                is_active=True,
+            ),
+            models.RecurringTemplateTask(
+                name="Client Questions",
+                schedule_type="client_frequency",
+                day_of_month=20,
+                initial_delay_days=21,
+                default_assigned_role="bookkeeper",
+                default_status="open",
+                order_index=30,
+                is_active=True,
+            ),
+            models.RecurringTemplateTask(
+                name="Send Reports",
+                schedule_type="client_frequency",
+                day_of_month=25,
+                initial_delay_days=21,
+                default_assigned_role="bookkeeper",
+                default_status="open",
+                order_index=40,
+                is_active=True,
+            ),
+        ]
+        db.add_all(templates)
+        db.commit()
+    # Resolve schedule type from client bookkeeping frequency
     freq = (client.bookkeeping_frequency or "").lower()
-    if freq not in ("monthly", "quarterly", "annual"):
-        schedule_type = "monthly"
+    if "quarter" in freq:
+        client_sched = "quarterly"
+    elif "annual" in freq or "year" in freq:
+        client_sched = "annual"
     else:
-        schedule_type = freq
+        client_sched = "monthly"
 
-    today = date.today()
+    def pick_assignee(default_role: str | None) -> int | None:
+        role = (default_role or "").lower().strip()
+        if role == "bookkeeper":
+            return client.bookkeeper_id or client.manager_id or created_by_user_id
+        if role == "manager":
+            return client.manager_id or client.bookkeeper_id or created_by_user_id
+        if role == "admin":
+            return created_by_user_id or client.manager_id or client.bookkeeper_id
+        return client.bookkeeper_id or client.manager_id or created_by_user_id
 
-    default_rules = [
-        "Complete Bank Feeds",
-        "Reconcile Accounts",
-        "Send Questions to Client",
-        "Send Reports to Client",
-    ]
+    for tpl in templates:
+        name = (tpl.name or "").strip()
+        if not name:
+            continue
 
-    for name in default_rules:
+        # Prevent duplicate RULES per client+name
+        existing_rule = (
+            db.query(models.RecurringTask)
+            .filter_by(client_id=client.id, name=name)
+            .first()
+        )
+        if existing_rule:
+            continue
+
+        schedule_type = (tpl.schedule_type or "client_frequency").strip()
+        if schedule_type == "client_frequency":
+            schedule_type = client_sched
+
+        delay_days = tpl.initial_delay_days if tpl.initial_delay_days is not None else 21
+        start_from = date.today() + timedelta(days=delay_days)
+
+        first_due = advance_next_run(
+            schedule_type=schedule_type,
+            day_of_month=tpl.day_of_month or 25,
+            weekday=tpl.weekday,
+            week_of_month=tpl.week_of_month,
+            from_date=start_from,
+        )
+
+        assigned_user_id = pick_assignee(getattr(tpl, "default_assigned_role", None))
+        default_status = getattr(tpl, "default_status", None) or "open"
+
         rt = models.RecurringTask(
             name=name,
-            description=f"Default recurring task: {name}",
-            schedule_type=schedule_type,   # monthly / quarterly / annual
-            day_of_month=25,               # simple pattern: 25th of period
-            weekday=None,
-            week_of_month=None,
+            description=tpl.description,
+            schedule_type=schedule_type,
+            day_of_month=tpl.day_of_month,
+            weekday=tpl.weekday,
+            week_of_month=tpl.week_of_month,
             client_id=client.id,
-            assigned_user_id=assigned_id,
-            default_status="new",
-            next_run=today,
+            assigned_user_id=assigned_user_id,
+            default_status=default_status,
+            next_run=first_due,  # will advance after creating the initial task
             active=True,
         )
         db.add(rt)
-        db.flush()  # get rt.id without committing yet
-
-        # Create the first actual Task instance for this rule (due today)
-        due = rt.next_run
+        db.flush()
+       # Create the initial concrete task for first_due
         task = models.Task(
-            title=rt.name,
-            description=rt.description or "",
-            status=rt.default_status,
-            due_date=due,
-            assigned_user_id=rt.assigned_user_id,
-            client_id=rt.client_id,
+            title=name,
+            description=tpl.description,
+            due_date=first_due,  # keep DATE to match run_recurring.py comparisons
+            assigned_user_id=assigned_user_id,
+            client_id=client.id,
             recurring_task_id=rt.id,
             task_type="recurring",
+            status=default_status,
         )
         db.add(task)
 
-        # Advance next_run so the recurring runner doesn't double-create for the same date
+        # Advance rule.next_run to next cycle (matches routes_recurring.py behavior)
         rt.next_run = advance_next_run(
-            rt.schedule_type,
-            due,
+            schedule_type,
+            first_due,
             day_of_month=rt.day_of_month,
             weekday=rt.weekday,
             week_of_month=rt.week_of_month,
         )
 
-    # One commit for all rules + tasks
     db.commit()
 
 @router.post("/", response_model=schemas.ClientOut, status_code=status.HTTP_201_CREATED)
