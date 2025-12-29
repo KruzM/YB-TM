@@ -230,7 +230,7 @@ export default function ClientDangerZone({ clientId, clientName }) {
 										{formatDateTime(r.created_at)}
 									</td>
 									<td className="px-3 py-1.5 text-slate-700">
-										{r.approved_by_id ? `#${r.approved_by_id}` : "�"}
+										{r.approved_by_id ? `#${r.approved_by_id}` : "-"}
 									</td>
 									<td className="px-3 py-1.5 text-slate-700">
 										{formatDateTime(r.executed_at)}

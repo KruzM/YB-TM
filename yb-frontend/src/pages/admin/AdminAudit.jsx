@@ -69,7 +69,7 @@ export default function AdminAudit() {
 			const res = await api.get("/users");
 			setUsers(res.data || []);
 		} catch (e) {
-			// Don�t hard fail the page if users can�t load.
+			// Don't hard fail the page if users can't load.
 			console.error(e);
 			setUsers([]);
 		} finally {
@@ -314,7 +314,7 @@ export default function AdminAudit() {
 											</td>
 											<td className="px-4 py-2 text-slate-700">
 												{evt.client_id ?? (
-													<span className="text-slate-400">�</span>
+													<span className="text-slate-400">-</span>
 												)}
 											</td>
 											<td className="px-4 py-2 text-slate-700">
@@ -323,7 +323,7 @@ export default function AdminAudit() {
 														{evt.entity_type}
 													</span>
 													<span className="text-[11px] text-slate-500">
-														{evt.entity_id != null ? `#${evt.entity_id}` : "�"}
+														{evt.entity_id != null ? `#${evt.entity_id}` : "-"}
 													</span>
 												</div>
 											</td>
@@ -337,7 +337,7 @@ export default function AdminAudit() {
 														{isOpen ? "Hide" : "View"}
 													</button>
 												) : (
-													<span className="text-slate-400">�</span>
+													<span className="text-slate-400">-</span>
 												)}
 											</td>
 										</tr>
@@ -362,8 +362,8 @@ export default function AdminAudit() {
 				</div>
 			</div>
 			<div className="text-[11px] text-slate-500">
-				Note: This is intended to be append-only. Later we can add retention /
-				export.
+				Note: This is intended to be append-only. Later versions may add
+				retention / export.
 			</div>
 		</div>
 	);

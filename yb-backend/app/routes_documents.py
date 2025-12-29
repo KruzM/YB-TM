@@ -13,7 +13,7 @@ from . import models, schemas
 from .auth import get_current_user, require_admin
 from .models import AppSetting
 from .permissions import assert_client_upload_allowed, assert_client_access
-
+from .storage import get_docs_root, abs_doc_path
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -29,29 +29,6 @@ def _safe_folder_name(name: str) -> str:
     name = re.sub(r"[\\/]+", "_", name)              # remove slashes
     name = re.sub(r"[^a-zA-Z0-9 _.-]", "", name)     # remove odd chars
     return name.strip() or "Client"
-
-
-def _get_docs_root(db: Session) -> Path:
-    """
-    Returns the docs root path from app_settings.docs_root_path if set,
-    otherwise DEFAULT_DOCS_DIR.
-    """
-    row = db.query(AppSetting).filter(AppSetting.key == "docs_root_path").first()
-    if row and isinstance(row.value, str) and row.value.strip():
-        return Path(row.value).expanduser()
-    return DEFAULT_DOCS_DIR
-def _abs_doc_path(db: Session, stored_path: str) -> Path:
-    """
-    Convert a stored_path (relative preferred) into an absolute Path under docs_root.
-    If an old record accidentally stored an absolute path, we still allow it.
-    """
-    p = Path(stored_path)
-
-    # If legacy absolute path exists, use it directly
-    if p.is_absolute():
-        return p
-
-    return _get_docs_root(db) / p
 
 
 @router.get("/", response_model=List[schemas.DocumentOut])
@@ -125,7 +102,7 @@ async def upload_document(
     month = statement_date.month
     day = statement_date.day
 
-    docs_root = _get_docs_root(db)
+    docs_root = get_docs_root(db)
     client_folder = _safe_folder_name(client.legal_name)
     account_folder_name = _safe_folder_name(account.name or f"Account-{account.id}")
 
@@ -191,7 +168,7 @@ async def upload_general_document(
     month = document_date.month
     day = document_date.day
 
-    docs_root = _get_docs_root(db)
+    docs_root = get_docs_root(db)
     client_folder = _safe_folder_name(client.legal_name)
 
     month_str = f"{month:02d}"
@@ -246,7 +223,7 @@ def download_document(
 
     assert_client_access(db, current_user, doc.client_id)
 
-    abs_path = _abs_doc_path(db, doc.stored_path)
+    abs_path = abs_doc_path(db, doc.stored_path)
     if not abs_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -269,7 +246,7 @@ def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    abs_path = _abs_doc_path(db, doc.stored_path)
+    abs_path = abs_doc_path(db, doc.stored_path)
     if abs_path.exists():
         try:
             abs_path.unlink()

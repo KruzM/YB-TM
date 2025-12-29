@@ -133,7 +133,7 @@ function resolveStringToSelectAndOther(stored, options) {
 	const match = options.find((opt) => opt.label === trimmed);
 	if (match) return { value: match.value, otherText: "" };
 
-	// Could be multiple banks or a custom name � treat as "other"
+	// Could be multiple banks or a custom name - treat as "other"
 	return { value: "other", otherText: trimmed };
 }
 

@@ -18,7 +18,37 @@ const TABS = [
 	"Notes",
 	"Danger Zone",
 ];
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+function parseDateOnlyLocal(isoDate) {
+	// isoDate: "YYYY-MM-DD"
+	const [y, m, d] = isoDate.split("-").map(Number);
+	return new Date(y, m - 1, d); // LOCAL midnight, no UTC shift
+}
+
+function formatDateSmart(value, opts = {}) {
+	// Handles:
+	// - "YYYY-MM-DD" (date-only)
+	// - full ISO datetimes ("2025-12-28T10:00:00", "...Z", etc.)
+	if (!value) return "";
+	const v = String(value);
+
+	if (DATE_ONLY_RE.test(v)) {
+		return parseDateOnlyLocal(v).toLocaleDateString();
+	}
+
+	// datetime
+	const dt = new Date(v);
+	return opts.withTime ? dt.toLocaleString() : dt.toLocaleDateString();
+}
+
+function toISODateLocal(d) {
+	// Returns YYYY-MM-DD based on LOCAL date (safe for <input type="date">)
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
+}
 export default function ClientDetail() {
 	const { id } = useParams();
 	const navigate = useNavigate();
@@ -141,7 +171,7 @@ export default function ClientDetail() {
 						<div>
 							Created:{" "}
 							<span className="font-medium">
-								{new Date(client.created_at).toLocaleDateString()}
+								{formatDateSmart(client.created_at)}
 							</span>
 						</div>
 						<div>
@@ -746,9 +776,8 @@ function StatementsTab({ client }) {
 		setUploadFile(null);
 
 		// default statement date: last day of that month in selected year
-		const lastDay = new Date(year, month, 0); // day 0 of next month
-		const iso = lastDay.toISOString().slice(0, 10); // "YYYY-MM-DD"
-		setStatementDate(iso);
+		const lastDay = new Date(year, month, 0); // local date object
+		setStatementDate(toISODateLocal(lastDay));
 
 		setModalOpen(true);
 	};
@@ -1262,9 +1291,10 @@ function DocumentsTab({ client }) {
 									const isLast = idx === visibleDocs.length - 1;
 									const docDate =
 										doc.day && doc.month && doc.year
-											? new Date(doc.year, doc.month - 1, doc.day)
-													.toISOString()
-													.slice(0, 10)
+											? `${doc.year}-${String(doc.month).padStart(
+													2,
+													"0"
+											  )}-${String(doc.day).padStart(2, "0")}`
 											: "";
 
 									return (
@@ -1642,7 +1672,7 @@ function RecurringTab({ client, users }) {
 	const [editing, setEditing] = useState(null);
 	const [saving, setSaving] = useState(false);
 
-	const todayISO = new Date().toISOString().slice(0, 10);
+	const todayISO = toISODateLocal(new Date());
 
 	const emptyForm = () => ({
 		name: "",
@@ -1834,9 +1864,8 @@ function RecurringTab({ client, users }) {
 							const assigned = users.find((u) => u.id === rt.assigned_user_id);
 							const scheduleDesc = describeRule(rt);
 							const nextRunLabel = rt.next_run
-								? new Date(rt.next_run).toLocaleDateString()
+								? formatDateSmart(rt.next_run)
 								: "-";
-
 							return (
 								<div
 									key={rt.id}

@@ -140,7 +140,7 @@ def create_onboarding_tasks_for_client(
 
         # IMPORTANT:
         # If you want Assigned names to show even while blocked, keep this assignment.
-        # If you do NOT want blocked tasks to appear in user dashboards, we�ll filter them out there (see section 3).
+        # If you do NOT want blocked tasks to appear in user dashboards, we'll filter them out there (see section 3).
         assigned_user_id = _pick_assigned_user_id(
             db=db,
             client=client,

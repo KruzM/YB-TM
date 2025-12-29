@@ -269,7 +269,7 @@ export default function Clients() {
 				<div className="border-b border-slate-200 px-4 py-2 text-xs text-yecny-slate flex justify-between">
 					<span>
 						{loading
-							? "Loading clients�"
+							? "Loading clients..."
 							: `${clients.length} client${clients.length === 1 ? "" : "s"}`}
 					</span>
 				</div>

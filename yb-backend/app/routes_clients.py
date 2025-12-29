@@ -13,6 +13,7 @@ from .onboarding import create_onboarding_tasks_for_client as create_onboarding_
 from .audit import log_event
 from .recurring_utils import advance_next_run
 from .permissions import assert_client_access, is_owner, is_admin, is_manager, is_bookkeeper
+from .storage import get_docs_root, abs_doc_path
 
 from .models import (
     Client,
@@ -23,53 +24,52 @@ from .models import (
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 # Make docs root configurable for your future NAS move
-DOCS_ROOT = Path(os.getenv("YECNY_DOCS_ROOT", "/home/kruzer04/YBTM/YB-TM/docs")).resolve()
 
 
-def _safe_unlink(path_str: str) -> None:
-    """
-    Delete a file if it exists, but ONLY if it's inside DOCS_ROOT.
-    Prevents accidental deletion outside your docs directory.
-    """
-    if not path_str:
-        return
 
-    p = Path(path_str).resolve()
+def _safe_unlink_abs(abs_path: Path, docs_root: Path) -> None:
+    abs_path = abs_path.resolve()
+    docs_root = docs_root.resolve()
 
-    # Ensure p is under DOCS_ROOT
     try:
-        p.relative_to(DOCS_ROOT)
+        abs_path.relative_to(docs_root)
     except ValueError:
         raise HTTPException(
             status_code=500,
-            detail=f"Refusing to delete file outside DOCS_ROOT: {p}",
+            detail=f"Refusing to delete outside docs root: {abs_path}",
         )
 
     try:
-        p.unlink()
+        abs_path.unlink()
     except FileNotFoundError:
-        # already gone = fine for purge
+        return
+    except IsADirectoryError:
+        # If somehow a dir path sneaks in, don't nuke it here
         return
 
-
-def _cleanup_empty_parents(start_dir: Path) -> None:
+def _cleanup_empty_parents(start_dir: Path, docs_root: Path) -> None:
     """
-    Try to remove empty directories up to DOCS_ROOT.
+    Try to remove empty directories up to docs_root.
     Stops when a directory isn't empty.
     """
     d = start_dir.resolve()
+    docs_root = docs_root.resolve()
+
     while True:
-        if d == DOCS_ROOT:
+        if d == docs_root:
             return
+
+        # Stop if we are no longer under docs_root
         try:
-            d.relative_to(DOCS_ROOT)
+            d.relative_to(docs_root)
         except ValueError:
             return
 
         try:
-            d.rmdir()
+            d.rmdir()  # only removes if empty
         except OSError:
             return
+
         d = d.parent
 
 
@@ -213,14 +213,16 @@ def create_default_recurring_tasks_for_client(db, client, created_by_user_id: in
             schedule_type = client_sched
 
         delay_days = tpl.initial_delay_days if tpl.initial_delay_days is not None else 21
-        start_from = date.today() + timedelta(days=delay_days)
+        
+
+        start_from = date.today() + timedelta(days=tpl.initial_delay_days or 21)
 
         first_due = advance_next_run(
-            schedule_type=schedule_type,
+            schedule_type,
+            start_from,
             day_of_month=tpl.day_of_month or 25,
             weekday=tpl.weekday,
             week_of_month=tpl.week_of_month,
-            from_date=start_from,
         )
 
         assigned_user_id = pick_assignee(getattr(tpl, "default_assigned_role", None))
@@ -242,13 +244,14 @@ def create_default_recurring_tasks_for_client(db, client, created_by_user_id: in
         db.add(rt)
         db.flush()
        # Create the initial concrete task for first_due
+        due_dt = datetime.combine(first_due, datetime.min.time())
         task = models.Task(
             title=name,
             description=tpl.description,
-            due_date=first_due,  # keep DATE to match run_recurring.py comparisons
+            due_date=due_dt,
             assigned_user_id=assigned_user_id,
             client_id=client.id,
-            recurring_task_id=rt.id,
+            recurring_task_id=rt.id,    
             task_type="recurring",
             status=default_status,
         )
@@ -277,7 +280,7 @@ async def create_client(
     db.refresh(new_client)
 
     # 1) Create the default recurring rules + first tasks (unchanged for now)
-    create_default_recurring_tasks_for_client(db, new_client, current_user)
+    create_default_recurring_tasks_for_client(db, new_client, created_by_user_id=current_user.id)
 
     # 2) Create onboarding tasks from templates (Admin/Manager, etc.)
     create_onboarding_tasks_helper(
@@ -474,14 +477,16 @@ def approve_and_execute_client_purge(
     pr.approved_by_id = current_user.id
     pr.approved_at = datetime.utcnow()
     db.flush()
+    docs_root = get_docs_root(db)
 
     try:
         # 1) Delete document files from disk (then DB rows)
         docs = db.query(models.Document).filter(models.Document.client_id == client_id).all()
         for doc in docs:
             if doc.stored_path:
-                _safe_unlink(doc.stored_path)
-                _cleanup_empty_parents(Path(doc.stored_path).resolve().parent)
+                abs_path = abs_doc_path(db, doc.stored_path)
+                _safe_unlink_abs(abs_path, docs_root)
+                _cleanup_empty_parents(abs_path.parent, docs_root)
 
         db.query(models.Document).filter(models.Document.client_id == client_id).delete(
             synchronize_session=False

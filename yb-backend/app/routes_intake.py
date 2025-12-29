@@ -6,12 +6,12 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from . import models, schemas
-from .auth import get_current_user, require_admin
+from .auth import get_current_user, require_admin, require_admin_or_owner
 from datetime import datetime, date, timedelta
 from .onboarding import create_onboarding_tasks_for_client
 from .routes_clients import create_default_recurring_tasks_for_client
 import json
-
+from .recurring_utils import advance_next_run, next_run_from
 router = APIRouter(prefix="/intake", tags=["client-intake"])
 
 
@@ -165,7 +165,7 @@ def delete_intake(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_admin(current_user)
+    require_admin_or_owner(current_user)
 
     intake = db.query(models.ClientIntake).get(intake_id)
     if not intake:
@@ -243,15 +243,15 @@ def create_custom_recurring_tasks_from_intake(db, client, intake, created_by_use
         assigned_user_id = r.get("assigned_user_id") or fallback_assignee()
         description = r.get("description")
 
-        # start 2�4 weeks after conversion (default 21)
+        # start 2-4 weeks after conversion (default 21)
         start_from = date.today() + timedelta(days=21)
 
-        first_due = advance_next_run(
-            schedule_type=schedule_type,
+        first_due = next_run_from(
+            schedule_type,
+            start_from,
             day_of_month=day_of_month or 25,
             weekday=None,
             week_of_month=None,
-            from_date=start_from,
         )
 
         rt = models.RecurringTask(
@@ -292,7 +292,7 @@ def create_custom_recurring_tasks_from_intake(db, client, intake, created_by_use
             weekday=rt.weekday,
             week_of_month=rt.week_of_month,
         )
-        db.commit()
+    db.flush()
 def create_accounts_from_intake(db, client, intake):
     """
     Auto-create Account records from an intake form.
@@ -511,68 +511,7 @@ async def convert_intake_to_client(
         client=client,
         created_by_user_id=current_user.id,
     )
-    # Create custom recurring tasks from intake (if any)
-    raw = getattr(intake, "custom_recurring_rules", None)
-    if raw:
-        try:
-            rules = json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:
-            rules = []
-
-        # Import helper if you have it; otherwise inline your next-run logic in create_default_recurring...
-        from datetime import date, timedelta
-        from .recurring_utils import get_next_run_date  # <- adjust if your helper is elsewhere
-
-        for r in rules or []:
-            title = (r.get("title") or "").strip()
-            if not title:
-                continue
-
-            # idempotent: don't double-create
-            existing = (
-                db.query(models.RecurringTask)
-                .filter(models.RecurringTask.client_id == client.id)
-                .filter(models.RecurringTask.name == title)
-                .first()
-            )
-            if existing:
-                continue
-
-            schedule_type = (r.get("schedule_type") or "monthly").strip()
-            day_of_month = r.get("day_of_month") or 25
-            assigned_user_id = r.get("assigned_user_id") or client.bookkeeper_id or current_user.id
-
-            start_from = date.today() + timedelta(days=21)  # 2�4 week delay default
-            next_run = get_next_run_date(
-                schedule_type=schedule_type,
-                day_of_month=day_of_month,
-                from_date=start_from,
-            )
-
-            rt = models.RecurringTask(
-                name=title,
-                description=(r.get("description") or None),
-                schedule_type=schedule_type,
-                day_of_month=day_of_month,
-                client_id=client.id,
-                assigned_user_id=assigned_user_id,
-                default_status="open",
-                next_run=next_run,
-                active=True,
-            )
-            db.add(rt)
-            db.flush()
-
-            db.add(models.Task(
-                title=title,
-                description=(r.get("description") or None),
-                due_date=datetime.combine(next_run, datetime.min.time()),
-                assigned_user_id=assigned_user_id,
-                client_id=client.id,
-                recurring_task_id=rt.id,
-                task_type="recurring",
-                status="open",
-            ))
+        # Update intake to link to new client
     if hasattr(intake, "client_id"):
         intake.client_id = client.id
     if hasattr(intake, "status"):

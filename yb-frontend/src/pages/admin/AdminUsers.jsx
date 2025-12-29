@@ -8,6 +8,7 @@ const ROLE_OPTIONS = [
 	{ value: "owner", label: "Owner" },
 	{ value: "client", label: "Client" },
 ];
+// copyToClipboard will be defined inside the component so it can call flashSaved
 
 export default function AdminUsers() {
 	const [users, setUsers] = useState([]);
@@ -68,6 +69,30 @@ export default function AdminUsers() {
 	const flashSaved = (msg = "Saved.") => {
 		setSavedMsg(msg);
 		setTimeout(() => setSavedMsg(""), 1500);
+	};
+
+	const copyToClipboard = async (text) => {
+		if (!text) return;
+		try {
+			if (navigator.clipboard && navigator.clipboard.writeText) {
+				await navigator.clipboard.writeText(text);
+				flashSaved("Copied.");
+				return;
+			}
+			// fallback using textarea + execCommand
+			const ta = document.createElement("textarea");
+			ta.value = text;
+			ta.setAttribute("readonly", "");
+			ta.style.position = "absolute";
+			ta.style.left = "-9999px";
+			document.body.appendChild(ta);
+			ta.select();
+			const ok = document.execCommand("copy");
+			document.body.removeChild(ta);
+			if (ok) flashSaved("Copied.");
+		} catch (err) {
+			// ignore
+		}
 	};
 
 	const handleCreate = async () => {
@@ -159,14 +184,6 @@ export default function AdminUsers() {
 		}
 	};
 
-	const copyToClipboard = async (text) => {
-		try {
-			await navigator.clipboard.writeText(text);
-			flashSaved("Copied.");
-		} catch {
-			// fallback: nothing
-		}
-	};
 	return (
 		<div className="space-y-5">
 			<div>
