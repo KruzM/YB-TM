@@ -4,15 +4,42 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
 from .onboarding import release_onboarding_tasks_if_ready
-from .permissions import assert_client_access
+from .permissions import assert_client_access, can_view_task, is_admin, is_owner
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _is_privileged(user: models.User) -> bool:
+    role = (user.role or "").strip().lower()
+    return role in ("admin", "owner")
+
+
+def _ensure_task_visible(db: Session, current_user: models.User, task_id: int) -> models.Task:
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not can_view_task(db, current_user, task):
+        # Avoid leaking existence
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return task
+
+
+def _task_linked_client_ids(db: Session, task: models.Task) -> Optional[List[int]]:
+    if not bool(getattr(task, "is_intercompany", False)):
+        return None
+    try:
+        links = db.query(models.TaskClientLink).filter(models.TaskClientLink.task_id == task.id).all()
+        return [l.client_id for l in links]
+    except Exception:
+        return None
 
 
 # --------- Core task CRUD ----------
@@ -26,17 +53,17 @@ async def list_tasks(
     current_user: models.User = Depends(get_current_user),
 ):
     """
-    Central list of tasks with optional filters.
+    Personal task list:
+    - Non-privileged: tasks assigned to me
+    - Privileged: also defaults to tasks assigned to me (Admin uses /unassigned for unassigned queue)
     """
-    query = db.query(models.Task).filter(
-        models.Task.assigned_user_id == current_user.id
-    )
-    query = query.filter(
-    ~((models.Task.task_type == "onboarding") & (func.lower(models.Task.status) == "blocked"))
-    )
+    query = db.query(models.Task).filter(models.Task.assigned_user_id == current_user.id)
+
+    # never show blocked onboarding in normal lists
+    query = query.filter(~((models.Task.task_type == "onboarding") & (func.lower(models.Task.status) == "blocked")))
+
     if q:
-        like = f"%{q}%"
-        query = query.filter(models.Task.title.ilike(like))
+        query = query.filter(models.Task.title.ilike(f"%{q}%"))
 
     if status and status != "all":
         query = query.filter(models.Task.status == status)
@@ -44,8 +71,35 @@ async def list_tasks(
     if client_id:
         query = query.filter(models.Task.client_id == client_id)
 
-    # Newest first
     tasks = query.order_by(models.Task.created_at.desc()).all()
+
+    # populate linked_client_ids for intercompany
+    for t in tasks:
+        try:
+            t.linked_client_ids = _task_linked_client_ids(db, t)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    return tasks
+@router.get("/unassigned", response_model=List[schemas.TaskOut])
+async def list_unassigned_tasks(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if not _is_privileged(current_user):
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    tasks = (
+        db.query(models.Task)
+        .filter(models.Task.assigned_user_id.is_(None))
+        .order_by(models.Task.created_at.desc())
+        .all()
+    )
+    for t in tasks:
+        try:
+            t.linked_client_ids = _task_linked_client_ids(db, t)  # type: ignore[attr-defined]
+        except Exception:
+            pass
     return tasks
 
 
@@ -56,15 +110,36 @@ async def create_task(
     current_user: models.User = Depends(get_current_user),
 ):
     """
-    Create a new ad-hoc task (not from recurring rule).
+    Create a new task.
+    - Non-privileged: assigned to self
+    - Privileged: can assign to others OR leave unassigned (leave_unassigned=True)
+    - Intercompany: privileged only, uses linked_client_ids and creates TaskClientLink rows
     """
+    privileged = _is_privileged(current_user)
+
+    is_intercompany = bool(getattr(task_in, "is_intercompany", False))
+    linked_client_ids = list(dict.fromkeys((task_in.linked_client_ids or [])))  # unique, keep order
+
+    if is_intercompany:
+        if not privileged:
+            raise HTTPException(status_code=403, detail="Only Admin/Owner can create intercompany tasks")
+        if not linked_client_ids:
+            raise HTTPException(status_code=422, detail="linked_client_ids is required for intercompany tasks")
+
+        # ensure caller can access ALL linked clients (or you can loosen this later)
+        for cid in linked_client_ids:
+            assert_client_access(db, current_user, cid)
+
     assigned_user_id = current_user.id
-    if task_in.assigned_user_id is not None and _is_privileged(current_user):
-        assigned_user_id = task_in.assigned_user_id
+    if privileged:
+        if task_in.assigned_user_id is not None:
+            assigned_user_id = task_in.assigned_user_id
+        elif bool(getattr(task_in, "leave_unassigned", False)):
+            assigned_user_id = None
 
     task_type = task_in.task_type or "ad_hoc"
     task = models.Task(
-        title=task_in.title,
+        title=task_in.title.strip(),
         description=task_in.description,
         status=task_in.status or "new",
         due_date=task_in.due_date,
@@ -73,10 +148,24 @@ async def create_task(
         recurring_task_id=task_in.recurring_task_id,
         task_type=task_type,
         created_by_id=current_user.id,
+        is_intercompany=is_intercompany,
     )
     db.add(task)
+    db.flush()  # task.id available
+    if is_intercompany:
+        # anchor the task to the first client for convenience (client tab queries also join links)
+        task.client_id = linked_client_ids[0]
+        for cid in linked_client_ids:
+            db.add(models.TaskClientLink(task_id=task.id, client_id=cid))
+
     db.commit()
     db.refresh(task)
+
+    try:
+        task.linked_client_ids = _task_linked_client_ids(db, task)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     return task
 
 
@@ -87,36 +176,48 @@ async def update_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Update a task. Commonly used to change status or due_date.
-    """
-    task = (
-        db.query(models.Task)
-        .filter(models.Task.id == task_id)
-        .first()
-    )
-    if not task:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    task = _ensure_task_visible(db, current_user, task_id)
 
-    role = (current_user.role or "").strip().lower()
-    is_privileged = role in ("admin", "owner")
-
-    if not is_privileged and task.assigned_user_id != current_user.id:
+    privileged = _is_privileged(current_user)
+    if not privileged and task.assigned_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed to modify this task")
 
+    # privileged assignment
+    if privileged and task_in.assigned_user_id is not None:
+        task.assigned_user_id = task_in.assigned_user_id
+
     if task_in.title is not None:
-        task.title = task_in.title
+        task.title = task_in.title.strip()
     if task_in.description is not None:
         task.description = task_in.description
-    if task_in.status is not None:
-        task.status = task_in.status
     if task_in.due_date is not None:
         task.due_date = task_in.due_date
     if task_in.client_id is not None:
         task.client_id = task_in.client_id
+    if task_in.recurring_task_id is not None:
+        task.recurring_task_id = task_in.recurring_task_id
+    if task_in.task_type is not None:
+        task.task_type = task_in.task_type
+    if task_in.onboarding_phase is not None:
+        task.onboarding_phase = task_in.onboarding_phase
+    if task_in.template_task_id is not None:
+        task.template_task_id = task_in.template_task_id
 
     status_changed_to_completed = (task_in.status is not None and task_in.status.lower() == "completed")
-
+    if task_in.status is not None:
+        # block completing intercompany task if not all linked clients completed
+        if status_changed_to_completed and bool(getattr(task, "is_intercompany", False)):
+            links = (
+                db.query(models.TaskClientLink)
+                .filter(models.TaskClientLink.task_id == task.id)
+                .all()
+            )
+            if links and any(not l.is_completed for l in links):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot complete intercompany task until all linked clients are checked off.",
+                )
+        task.status = task_in.status
     db.commit()
     db.refresh(task)
 
@@ -125,10 +226,16 @@ async def update_task(
             db=db,
             client_id=task.client_id,
             created_by_user_id=current_user.id,
-    )
-    db.refresh(task)  # optional
+        )
+        db.refresh(task)
+
+    try:
+        task.linked_client_ids = _task_linked_client_ids(db, task)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     return task
+
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(
@@ -136,18 +243,11 @@ async def delete_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    task = (
-        db.query(models.Task)
-        .filter(
-            models.Task.id == task_id,
-            models.Task.assigned_user_id == current_user.id,
+    task = _ensure_task_visible(db, current_user, task_id)
+    privileged = _is_privileged(current_user)
 
-        )
-        .first()
-
-    )
-    if not task:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    if not privileged and task.assigned_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
 
     db.delete(task)
     db.commit()
@@ -158,23 +258,59 @@ async def delete_task(
 
 @router.get("/my-dashboard", response_model=schemas.TaskDashboardResponse)
 async def get_my_dashboard(
+    assignee_user_id: Optional[int] = None,
+    include_unassigned: bool = False,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     """
-    Return tasks for the current user grouped for the dashboard view.
+    Dashboard filter behavior:
+    - Bookkeeper/etc: can only view self
+    - Manager: can view self + direct reports
+    - Admin/Owner: can view anyone, OR view unassigned via include_unassigned=true
     """
+    role = (current_user.role or "").strip().lower()
+    is_privileged = role in ("owner", "admin")
+    is_manager = role == "manager"
+
+    if include_unassigned and not is_privileged:
+        raise HTTPException(status_code=403, detail="Only Admin/Owner can view unassigned tasks")
+
+    # Determine which user we're viewing
+    target_user_id = assignee_user_id or current_user.id
+
+    if not is_privileged:
+        if is_manager:
+            allowed_ids = (
+                db.query(models.User.id)
+                .filter(
+                    (models.User.id == current_user.id)
+                    | (models.User.manager_id == current_user.id)
+                )
+                .all()
+            )
+            allowed_ids = {row[0] for row in allowed_ids}
+            if target_user_id not in allowed_ids:
+                raise HTTPException(status_code=403, detail="Not allowed to view this user's dashboard")
+        else:
+            if target_user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Not allowed to view this user's dashboard")
+
     today = date.today()
     seven_days = today + timedelta(days=7)
 
-    base_q = db.query(models.Task).filter(
-        models.Task.assigned_user_id == current_user.id
-    )
+    base_q = db.query(models.Task)
+
+    # who are we viewing?
+    if include_unassigned:
+        base_q = base_q.filter(models.Task.assigned_user_id.is_(None))
+    else:
+        base_q = base_q.filter(models.Task.assigned_user_id == target_user_id)
+
+    # never show blocked onboarding in dashboard
     base_q = base_q.filter(
         ~((models.Task.task_type == "onboarding") & (func.lower(models.Task.status) == "blocked"))
     )
-
-    # Overdue: due before today (by date), not completed, not waiting_on_client
     overdue = (
         base_q.filter(
             models.Task.due_date.isnot(None),
@@ -186,7 +322,6 @@ async def get_my_dashboard(
         .all()
     )
 
-    # Today: due today (by date), not completed, not waiting_on_client
     today_tasks = (
         base_q.filter(
             models.Task.due_date.isnot(None),
@@ -198,7 +333,6 @@ async def get_my_dashboard(
         .all()
     )
 
-    # Upcoming: due in next 7 days (tomorrow .. today+7), not completed, not waiting_on_client
     upcoming = (
         base_q.filter(
             models.Task.due_date.isnot(None),
@@ -211,7 +345,6 @@ async def get_my_dashboard(
         .all()
     )
 
-    # Waiting on client: all statuses == waiting_on_client (any due date)
     waiting = (
         base_q.filter(models.Task.status == "waiting_on_client")
         .order_by(models.Task.due_date.asc())
@@ -225,42 +358,81 @@ async def get_my_dashboard(
         waiting_on_client=waiting,
     )
 
-def _ensure_task_visible(task_id: int, db: Session, current_user: models.User) -> models.Task:
-    task = db.query(models.Task).filter(models.Task.id == task_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+# --------- Intercompany linked clients ----------
 
-    if _is_privileged(current_user):
-        return task
+@router.get("/{task_id}/linked-clients", response_model=List[schemas.TaskClientLinkOut])
+async def list_task_linked_clients(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    task = _ensure_task_visible(db, current_user, task_id)
+    if not bool(getattr(task, "is_intercompany", False)):
+        return []
 
-    # assigned user can always see
-    if task.assigned_user_id == current_user.id:
-        return task
+    links = (
+        db.query(models.TaskClientLink)
+        .filter(models.TaskClientLink.task_id == task_id)
+        .all()
+    )
 
-    # if task is tied to a client, allow access if the user can access that client
-    if task.client_id:
-        try:
-            assert_client_access(db, current_user, task.client_id)
-            return task
-        except HTTPException:
-            pass
+    # attach client names
+    out: List[schemas.TaskClientLinkOut] = []
+    for l in links:
+        c = db.query(models.Client).filter(models.Client.id == l.client_id).first()
+        out.append(
+            schemas.TaskClientLinkOut(
+                client_id=l.client_id,
+                client_name=c.legal_name if c else None,
+                is_completed=bool(l.is_completed),
+                completed_at=l.completed_at,
+                completed_by_id=l.completed_by_id,
+            )
+        )
+    return out
 
-    raise HTTPException(status_code=404, detail="Task not found")
+@router.put("/{task_id}/linked-clients/{client_id}", response_model=schemas.TaskClientLinkOut)
+async def set_task_linked_client_completion(
+    task_id: int,
+    client_id: int,
+    body: schemas.TaskClientLinkUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    task = _ensure_task_visible(db, current_user, task_id)
+    if not bool(getattr(task, "is_intercompany", False)):
+        raise HTTPException(status_code=409, detail="Not an intercompany task")
 
-    if _is_privileged(current_user):
-        return task
+    # must have access to that client to check it off
+    assert_client_access(db, current_user, client_id)
 
-    # assigned user can always see
-    if task.assigned_user_id == current_user.id:
-        return task
+    link = (
+        db.query(models.TaskClientLink)
+        .filter(models.TaskClientLink.task_id == task_id, models.TaskClientLink.client_id == client_id)
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Linked client not found on this task")
 
-    # if task is tied to a client, allow that client's manager/bookkeeper to see
-    if task.client_id:
-        client = db.query(models.Client).filter(models.Client.id == task.client_id).first()
-        if client and (client.manager_id == current_user.id or client.bookkeeper_id == current_user.id):
-            return task
+    if body.is_completed:
+        link.is_completed = True
+        link.completed_at = datetime.utcnow()
+        link.completed_by_id = current_user.id
+    else:
+        link.is_completed = False
+        link.completed_at = None
+        link.completed_by_id = None
 
-    raise HTTPException(status_code=404, detail="Task not found")
+    db.commit()
+
+    c = db.query(models.Client).filter(models.Client.id == client_id).first()
+    return schemas.TaskClientLinkOut(
+        client_id=client_id,
+        client_name=c.legal_name if c else None,
+        is_completed=bool(link.is_completed),
+        completed_at=link.completed_at,
+        completed_by_id=link.completed_by_id,
+    )
 
 # --------- Subtasks ----------
 
@@ -270,7 +442,7 @@ async def list_subtasks(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_task_visible(task_id, db, current_user)
+    _ensure_task_visible(db, current_user, task_id)
     return (
         db.query(models.TaskSubtask)
         .filter(models.TaskSubtask.task_id == task_id)
@@ -278,18 +450,15 @@ async def list_subtasks(
         .all()
     )
 
-@router.post(
-    "/{task_id}/subtasks",
-    response_model=schemas.TaskSubtaskOut,
-    status_code=status.HTTP_201_CREATED,
-)
+
+@router.post("/{task_id}/subtasks", response_model=schemas.TaskSubtaskOut, status_code=status.HTTP_201_CREATED)
 async def create_subtask(
     task_id: int,
     sub_in: schemas.TaskSubtaskCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_task_visible(task_id, db, current_user)
+    _ensure_task_visible(db, current_user, task_id)
     sub = models.TaskSubtask(task_id=task_id, title=sub_in.title.strip())
     db.add(sub)
     db.commit()
@@ -297,10 +466,7 @@ async def create_subtask(
     return sub
 
 
-@router.put(
-    "/{task_id}/subtasks/{sub_id}",
-    response_model=schemas.TaskSubtaskOut,
-)
+@router.put("/{task_id}/subtasks/{sub_id}", response_model=schemas.TaskSubtaskOut)
 async def update_subtask(
     task_id: int,
     sub_id: int,
@@ -308,13 +474,10 @@ async def update_subtask(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_task_visible(task_id, db, current_user)
+    _ensure_task_visible(db, current_user, task_id)
     sub = (
         db.query(models.TaskSubtask)
-        .filter(
-            models.TaskSubtask.id == sub_id,
-            models.TaskSubtask.task_id == task_id,
-        )
+        .filter(models.TaskSubtask.id == sub_id, models.TaskSubtask.task_id == task_id)
         .first()
     )
     if not sub:
@@ -335,7 +498,7 @@ async def list_notes(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_task_visible(task_id, db, current_user)
+    _ensure_task_visible(db, current_user, task_id)
     notes = (
         db.query(models.TaskNote)
         .filter(models.TaskNote.task_id == task_id)
@@ -343,27 +506,20 @@ async def list_notes(
         .all()
     )
 
-    # Optionally populate author_name from related User
-    result: List[models.TaskNote] = []
+    out = []
     for n in notes:
         if n.author and not getattr(n, "author_name", None):
-            # just attach a convenience attribute; Pydantic will map it
             n.author_name = n.author.name or n.author.email  # type: ignore[attr-defined]
-        result.append(n)
-    return result
-
-@router.post(
-    "/{task_id}/notes",
-    response_model=schemas.TaskNoteOut,
-    status_code=status.HTTP_201_CREATED,
-)
+        out.append(n)
+    return out
+@router.post("/{task_id}/notes", response_model=schemas.TaskNoteOut, status_code=status.HTTP_201_CREATED)
 async def create_note(
     task_id: int,
     note_in: schemas.TaskNoteCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_task_visible(task_id, db, current_user)
+    _ensure_task_visible(db, current_user, task_id)
     note = models.TaskNote(
         task_id=task_id,
         body=note_in.body.strip(),
@@ -379,16 +535,7 @@ async def create_note(
     return note
 
 
-# --------- Helper ----------
-
-def _is_privileged(user: models.User) -> bool:
-    role = (user.role or "").strip().lower()
-    return role in ("admin", "owner")
-
-def _can_access_client(user: models.User, client: models.Client) -> bool:
-    if _is_privileged(user):
-        return True
-    return client.manager_id == user.id or client.bookkeeper_id == user.id
+# --------- Client tasks tab endpoint ----------
 
 @router.get("/client/{client_id}", response_model=List[schemas.TaskOut])
 async def list_tasks_for_client(
@@ -399,32 +546,37 @@ async def list_tasks_for_client(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    # must be able to access the client
+    assert_client_access(db, current_user, client_id)
 
-    if not _can_access_client(current_user, client):
-        raise HTTPException(status_code=403, detail="Not allowed")
+    # include:
+    # - tasks directly on the client_id
+    # - tasks linked through TaskClientLink (intercompany)
+    query = (
+        db.query(models.Task)
+        .outerjoin(models.TaskClientLink, models.TaskClientLink.task_id == models.Task.id)
+        .filter(or_(models.Task.client_id == client_id, models.TaskClientLink.client_id == client_id))
+        .distinct()
+    )
 
-    query = db.query(models.Task).filter(models.Task.client_id == client_id)
-
-    # default: show lifespan one-offs, not onboarding/recurring
     types = [t.strip() for t in (task_types or "").split(",") if t.strip()]
     if types:
         query = query.filter(models.Task.task_type.in_(types))
     else:
         query = query.filter(~models.Task.task_type.in_(["onboarding", "recurring"]))
 
-    # never show blocked onboarding (safety)
-    query = query.filter(
-        ~((models.Task.task_type == "onboarding") & (func.lower(models.Task.status) == "blocked"))
-    )
+    query = query.filter(~((models.Task.task_type == "onboarding") & (func.lower(models.Task.status) == "blocked")))
 
     if status and status != "all":
         query = query.filter(models.Task.status == status)
 
     if q:
-        like = f"%{q}%"
-        query = query.filter(models.Task.title.ilike(like))
+        query = query.filter(models.Task.title.ilike(f"%{q}%"))
 
-    return query.order_by(models.Task.created_at.desc()).all()
+    tasks = query.order_by(models.Task.created_at.desc()).all()
+    for t in tasks:
+        try:
+            t.linked_client_ids = _task_linked_client_ids(db, t)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    return tasks

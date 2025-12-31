@@ -20,6 +20,7 @@ export default function AdminUsers() {
 	const [newName, setNewName] = useState("");
 	const [newEmail, setNewEmail] = useState("");
 	const [newRole, setNewRole] = useState("bookkeeper");
+	const [newManagerId, setNewManagerId] = useState("");
 	const [newPassword, setNewPassword] = useState("");
 	const [creating, setCreating] = useState(false);
 
@@ -41,7 +42,12 @@ export default function AdminUsers() {
 		setError("");
 		try {
 			const res = await api.get("/users");
-			setUsers(res.data || []);
+			const list = (res.data || []).map((u) => ({
+				...u,
+				_orig_name: u.name || "",
+				_orig_email: u.email || "",
+			}));
+			setUsers(list);
 		} catch (e) {
 			console.error(e);
 			setError("Failed to load users.");
@@ -65,7 +71,11 @@ export default function AdminUsers() {
 			return name.includes(q) || email.includes(q) || role.includes(q);
 		});
 	}, [users, search]);
-
+	const managers = useMemo(() => {
+		return users
+			.filter((u) => (u.role || "").toLowerCase() === "manager" && u.is_active)
+			.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+	}, [users]);
 	const flashSaved = (msg = "Saved.") => {
 		setSavedMsg(msg);
 		setTimeout(() => setSavedMsg(""), 1500);
@@ -110,6 +120,10 @@ export default function AdminUsers() {
 				email,
 				role: newRole,
 				password,
+				manager_id:
+					newRole === "bookkeeper" && String(newManagerId).trim()
+						? Number(newManagerId)
+						: null,
 			};
 			const res = await api.post("/users", payload);
 			const created = res.data;
@@ -121,6 +135,7 @@ export default function AdminUsers() {
 			setNewName("");
 			setNewEmail("");
 			setNewRole("bookkeeper");
+			setNewManagerId("");
 			setNewPassword("");
 			flashSaved("User created.");
 		} catch (e) {
@@ -137,7 +152,17 @@ export default function AdminUsers() {
 		try {
 			const res = await api.put(`/users/${userId}`, patch);
 			const updated = res.data;
-			setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)));
+			setUsers((prev) =>
+				prev.map((u) =>
+					u.id === userId
+						? {
+								...updated,
+								_orig_name: updated.name || "",
+								_orig_email: updated.email || "",
+						  }
+						: u
+				)
+			);
 			flashSaved();
 		} catch (e) {
 			console.error(e);
@@ -153,6 +178,7 @@ export default function AdminUsers() {
 
 	const handleOpenReset = (u) => {
 		setResetUser(u);
+		setNewManagerId("");
 		setResetPassword("");
 		setResetResult("");
 		setResetOpen(true);
@@ -259,6 +285,25 @@ export default function AdminUsers() {
 							placeholder="Set initial password"
 						/>
 					</div>
+					{newRole === "bookkeeper" && (
+						<div className="mt-2 max-w-sm space-y-1">
+							<div className="text-[11px] text-slate-500">
+								Manager (optional)
+							</div>
+							<select
+								value={newManagerId}
+								onChange={(e) => setNewManagerId(e.target.value)}
+								className="w-full border border-slate-300 rounded-md px-3 py-2 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+							>
+								<option value="">- None -</option>
+								{managers.map((m) => (
+									<option key={m.id} value={m.id}>
+										{m.name || m.email}
+									</option>
+								))}
+							</select>
+						</div>
+					)}
 				</div>
 
 				<div className="flex justify-end">
@@ -330,6 +375,9 @@ export default function AdminUsers() {
 										Role
 									</th>
 									<th className="text-left px-4 py-2 font-semibold text-slate-600">
+										Manager
+									</th>
+									<th className="text-left px-4 py-2 font-semibold text-slate-600">
 										Status
 									</th>
 									<th className="text-right px-4 py-2 font-semibold text-slate-600">
@@ -357,9 +405,11 @@ export default function AdminUsers() {
 															)
 														)
 													}
-													onBlur={(e) =>
-														updateUser(u.id, { name: e.target.value })
-													}
+													onBlur={(e) => {
+														const val = (e.target.value || "").trim();
+														if (val === (u._orig_name || "")) return;
+														updateUser(u.id, { name: val });
+													}}
 													disabled={rowBusy}
 													className="w-full border border-slate-200 rounded-md px-2 py-1 text-xs bg-white disabled:opacity-60"
 												/>
@@ -377,9 +427,13 @@ export default function AdminUsers() {
 															)
 														)
 													}
-													onBlur={(e) =>
-														updateUser(u.id, { email: e.target.value })
-													}
+													onBlur={(e) => {
+														const val = (e.target.value || "")
+															.trim()
+															.toLowerCase();
+														if (val === (u._orig_email || "")) return;
+														updateUser(u.id, { email: val });
+													}}
 													disabled={rowBusy}
 													className="w-full border border-slate-200 rounded-md px-2 py-1 text-xs bg-white disabled:opacity-60"
 												/>
@@ -388,9 +442,20 @@ export default function AdminUsers() {
 											<td className="px-4 py-3">
 												<select
 													value={(u.role || "").toLowerCase()}
-													onChange={(e) =>
-														updateUser(u.id, { role: e.target.value })
-													}
+													onChange={(e) => {
+														const nextRole = e.target.value;
+
+														const patch = { role: nextRole };
+
+														// If switching away from bookkeeper, clear manager assignment
+														if (
+															String(nextRole).toLowerCase() !== "bookkeeper"
+														) {
+															patch.manager_id = null;
+														}
+
+														updateUser(u.id, patch);
+													}}
 													disabled={rowBusy}
 													className="border border-slate-200 rounded-md px-2 py-1 text-xs bg-white disabled:opacity-60"
 												>
@@ -401,7 +466,31 @@ export default function AdminUsers() {
 													))}
 												</select>
 											</td>
-
+											<td className="px-4 py-3">
+												{(u.role || "").toLowerCase() === "bookkeeper" ? (
+													<select
+														value={u.manager_id ?? ""}
+														onChange={(e) =>
+															updateUser(u.id, {
+																manager_id: e.target.value
+																	? Number(e.target.value)
+																	: null,
+															})
+														}
+														disabled={rowBusy}
+														className="border border-slate-200 rounded-md px-2 py-1 text-xs bg-white disabled:opacity-60"
+													>
+														<option value="">- None -</option>
+														{managers.map((m) => (
+															<option key={m.id} value={m.id}>
+																{m.name || m.email}
+															</option>
+														))}
+													</select>
+												) : (
+													<span className="text-[11px] text-slate-400">-</span>
+												)}
+											</td>
 											<td className="px-4 py-3">
 												<span
 													className={

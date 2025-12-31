@@ -8,12 +8,35 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from . import models, schemas
-from .auth import get_password_hash, require_admin_or_owner, require_staff
+from .auth import get_current_user, get_password_hash, require_admin_or_owner, require_staff
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 ALLOWED_ROLES = {"bookkeeper", "manager", "admin", "owner", "client"}
 
+@router.get("/team", response_model=List[schemas.UserOut])
+def get_team_users(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    role = (current_user.role or "").strip().lower()
+
+    if role in ("owner", "admin"):
+        return db.query(models.User).order_by(models.User.name.asc()).all()
+
+    if role == "manager":
+        return (
+            db.query(models.User)
+            .filter(
+                (models.User.id == current_user.id)
+                | (models.User.manager_id == current_user.id)
+            )
+            .order_by(models.User.name.asc())
+            .all()
+        )
+
+    # bookkeeper/client/etc: only self
+    return [current_user]
 
 def _normalize_role(role: Optional[str]) -> Optional[str]:
     if role is None:
@@ -77,6 +100,7 @@ def create_user(
         hashed_password=get_password_hash(user_in.password),
         role=role,
         is_active=True,
+        manager_id=user_in.manager_id,
     )
     db.add(user)
     db.commit()
@@ -123,6 +147,24 @@ def update_user(
                 detail=f"Invalid role. Allowed: {sorted(ALLOWED_ROLES)}",
             )
         user.role = new_role
+        if new_role != "manager" and user.manager_id is not None:
+            # clear manager_id if demoted from manager
+            user.manager_id = None
+        if new_role != "bookkeeper" and user_id == current_user.id:
+            # prevent locking yourself out by accident
+            raise HTTPException(
+                status_code=400,
+                detail="You cannot change your own role to a non-bookkeeper role.",
+            )
+        if new_role == "manager" and user.manager_id == user.id:
+            # prevent self-reference
+            user.manager_id = None
+        if new_role == "client":
+            # clients cannot have a manager
+            user.manager_id = None
+        if new_role != "bookkeeper":
+            # only bookkeepers can be assigned a manager
+            user.manager_id = None
 
     if "is_active" in data and data["is_active"] is not None:
         # prevent locking yourself out by accident
@@ -132,7 +174,25 @@ def update_user(
                 detail="You cannot deactivate your own account.",
             )
         user.is_active = bool(data["is_active"])
+        
+    if "manager_id" in data:
+        mid = data["manager_id"]
 
+        # allow clearing
+        if mid is None:
+            user.manager_id = None
+        else:
+            if mid == user.id:
+                raise HTTPException(status_code=400, detail="User cannot be their own manager")
+
+            mgr = db.query(models.User).get(mid)
+            if not mgr:
+                raise HTTPException(status_code=400, detail="manager_id user not found")
+
+            if (mgr.role or "").lower() != "manager":
+                raise HTTPException(status_code=400, detail="manager_id must reference a Manager")
+
+            user.manager_id = mid
     db.commit()
     db.refresh(user)
     return user

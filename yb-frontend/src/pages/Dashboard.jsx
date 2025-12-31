@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
-
+import DashboardAssigneeFilter from "../components/DashboardAssigneeFilter";
 const STATUS_OPTIONS = [
 	{ value: "new", label: "New" },
 	{ value: "in_progress", label: "In progress" },
@@ -29,13 +29,21 @@ export default function Dashboard() {
 
 	const [selectedTask, setSelectedTask] = useState(null);
 	const [detailOpen, setDetailOpen] = useState(false);
+	const [assigneeFilter, setAssigneeFilter] = useState("me");
 
 	// ---- Loaders ----
 
 	const loadDashboardOnly = async () => {
 		setError("");
 		try {
-			const res = await api.get("/tasks/my-dashboard");
+			const params = {};
+			if (assigneeFilter === "unassigned") {
+				params.include_unassigned = true;
+			} else if (assigneeFilter !== "me") {
+				params.assignee_user_id = Number(assigneeFilter);
+			}
+
+			const res = await api.get("/tasks/my-dashboard", { params });
 			setData(res.data || {});
 		} catch (err) {
 			console.error(err);
@@ -86,9 +94,21 @@ export default function Dashboard() {
 		}
 	};
 
+	// Load clients once on first render
 	useEffect(() => {
-		loadAll();
+		loadClients();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
+
+	// Load dashboard tasks whenever the filter changes (also runs once on initial render)
+	useEffect(() => {
+		(async () => {
+			setLoading(true);
+			await loadDashboardOnly();
+			setLoading(false);
+		})();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [assigneeFilter]);
 
 	const handleRefresh = async () => {
 		setRefreshing(true);
@@ -142,11 +162,21 @@ export default function Dashboard() {
 						{user?.name ? `Good day, ${user.name}` : "Your Daily Dashboard"}
 					</h1>
 					<p className="text-xs text-yecny-slate mt-1">
-						{todayLabel} - All tasks assigned to you, grouped by urgency.
+						{todayLabel} -{" "}
+						{assigneeFilter === "me"
+							? "Your tasks"
+							: assigneeFilter === "unassigned"
+							? "Unassigned tasks (assign queue)"
+							: "Tasks for selected user"}{" "}
+						grouped by urgency.
 					</p>
 				</div>
 
 				<div className="flex items-center gap-2 text-xs">
+					<DashboardAssigneeFilter
+						value={assigneeFilter}
+						onChange={setAssigneeFilter}
+					/>
 					<button
 						type="button"
 						onClick={handleRefresh}

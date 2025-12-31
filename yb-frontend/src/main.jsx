@@ -26,6 +26,7 @@ import AdminUsers from "./pages/admin/AdminUsers";
 import AdminOnboardingTemplates from "./pages/admin/AdminOnboardingTemplates";
 import AdminAudit from "./pages/admin/AdminAudit";
 import AdminRecurringTemplates from "./pages/admin/AdminRecurringTemplates";
+
 function SettingsPage() {
 	return <div className="text-sm text-yecny-slate">Settings (coming soon)</div>;
 }
@@ -73,6 +74,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 							>
 								<Route index element={<AdminOrg />} />
 								<Route path="users" element={<AdminUsers />} />
+								
 								<Route
 									path="onboarding-templates"
 									element={<AdminOnboardingTemplates />}

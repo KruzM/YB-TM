@@ -65,3 +65,41 @@ def assert_client_upload_allowed(db: Session, user: models.User, client_id: int)
     )
     if is_client(user) and (not link or not link.can_upload_docs):
         raise HTTPException(status_code=403, detail="Upload not allowed")
+
+def can_view_task(db: Session, user: models.User, task: models.Task) -> bool:
+    # Owner/Admin can see all
+    if is_owner(user) or is_admin(user):
+        return True
+
+    # Assigned user can see
+    if getattr(task, "assigned_user_id", None) == user.id:
+        return True
+
+    # Single-client task: allow if user can access that client
+    task_client_id = getattr(task, "client_id", None)
+    if task_client_id:
+        try:
+            assert_client_access(db, user, int(task_client_id))
+            return True
+        except HTTPException:
+            pass
+
+    # Intercompany: allow if user can access ANY linked client
+    if bool(getattr(task, "is_intercompany", False)):
+        try:
+            links = (
+                db.query(models.TaskClientLink)
+                .filter(models.TaskClientLink.task_id == task.id)
+                .all()
+            )
+        except Exception:
+            links = []
+
+        for link in links:
+            try:
+                assert_client_access(db, user, int(link.client_id))
+                return True
+            except HTTPException:
+                continue
+
+    return False

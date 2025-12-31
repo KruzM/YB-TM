@@ -19,7 +19,10 @@ from . import (
     routes_intake,   
     routes_onboarding,
     routes_contacts,
-    routes_recurring_templates
+    routes_recurring_templates,
+    routes_client_links,
+    routes_client_manual,
+    routes_quick_notes,
 )
 from .routes_client_notes import router as client_notes_router
 from .routes_clientOnboarding import router as client_onboarding_router
@@ -60,6 +63,9 @@ app.include_router(client_onboarding_router, prefix="/api")
 app.include_router(admin_settings_router, prefix="/api")
 app.include_router(admin_audit_router, prefix="/api")
 app.include_router(routes_recurring_templates.router, prefix="/api")
+app.include_router(routes_client_manual.router, prefix="/api")
+app.include_router(routes_client_links.router, prefix="/api")
+app.include_router(routes_quick_notes.router, prefix="/api")
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}

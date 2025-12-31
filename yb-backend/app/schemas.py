@@ -15,12 +15,12 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
-
+    manager_id: Optional[int] = None
 
 class UserOut(UserBase):
     id: int
     is_active: bool
-
+    manager_id: Optional[int] = None
     class Config:
         # pydantic v2 equivalent of orm_mode=True
         from_attributes = True
@@ -30,7 +30,7 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
-
+    manager_id: Optional[int] = None
 
 class UserPasswordResetIn(BaseModel):
     password: Optional[str] = None
@@ -60,10 +60,15 @@ class TaskBase(BaseModel):
     task_type: str | None = "ad_hoc"  # 'recurring', 'onboarding', 'project', 'ad_hoc'
     onboarding_phase: str | None = None
     template_task_id: int | None = None
+    is_intercompany: bool | None = False
+    linked_client_ids: Optional[List[int]] = None
 
 class TaskCreate(TaskBase):
     due_date: Optional[datetime] = None
     assigned_user_id: Optional[int] = None
+    leave_unassigned: bool = False
+    linked_client_ids: Optional[List[int]] = None
+
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
@@ -87,6 +92,8 @@ class TaskOut(TaskBase):
     created_by_id: int | None = None
     class Config:
         from_attributes = True
+    is_intercompany: bool | None = False
+    linked_client_ids: Optional[List[int]] = None
 
 class TaskDashboardResponse(BaseModel):
     overdue: List[TaskOut]
@@ -637,3 +644,85 @@ class AuditEventOut(BaseModel):
     client_id: Optional[int] = None
     meta: Optional[Dict[str, Any]] = None
     created_at: datetime
+
+# ---------- Intercompany Task Client Links ----------
+class TaskClientLinkUpdate(BaseModel):
+    is_completed: bool
+
+class TaskClientLinkOut(BaseModel):
+    client_id: int
+    client_name: Optional[str] = None
+    is_completed: bool
+    completed_at: Optional[datetime] = None
+    completed_by_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Client Manual ----------
+class ClientManualEntryCreate(BaseModel):
+    task_id: Optional[int] = None
+    category: str = "general"  # daily/weekly/monthly/quarterly/yearly/projects/general
+    title: str
+    body: Optional[str] = None
+
+class ClientManualEntryUpdate(BaseModel):
+    category: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    task_id: Optional[int] = None
+
+class ClientManualEntryOut(BaseModel):
+    id: int
+    client_id: int
+    task_id: Optional[int] = None
+    category: str
+    title: str
+    body: Optional[str] = None
+    created_by_id: Optional[int] = None
+    updated_by_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ---------- Client Links ----------
+class ClientLinkCreate(BaseModel):
+    related_client_id: int
+    relationship_type: Optional[str] = "intercompany"
+
+class ClientLinkUpdate(BaseModel):
+    relationship_type: Optional[str] = None
+
+class ClientLinkOut(BaseModel):
+    id: int
+    client_id: int
+    related_client_id: int
+    relationship_type: str
+    created_by_id: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Quick Notes ----------
+class QuickNoteCreate(BaseModel):
+    client_id: Optional[int] = None
+    body: str
+
+class QuickNoteUpdate(BaseModel):
+    client_id: Optional[int] = None
+    body: Optional[str] = None
+
+class QuickNoteOut(BaseModel):
+    id: int
+    client_id: Optional[int] = None
+    created_by_id: Optional[int] = None
+    body: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

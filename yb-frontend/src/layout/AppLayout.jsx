@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-
+import QuickAddFab from "../components/QuickAddFab";
 export default function AppLayout() {
 	const { user, logout } = useAuth();
 	const role = (user?.role || "").toLowerCase();
@@ -76,6 +76,7 @@ export default function AppLayout() {
 				<main className="flex-1 p-6">
 					<Outlet />
 				</main>
+				<QuickAddFab />
 			</div>
 		</div>
 	);

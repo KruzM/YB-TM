@@ -35,7 +35,20 @@ class User(Base):
         back_populates="assigned_user",
         foreign_keys="Task.assigned_user_id",
     )
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
+    manager = relationship(
+        "User",
+        remote_side="User.id",
+        back_populates="direct_reports",
+        lazy="joined",
+    )
+
+    direct_reports = relationship(
+        "User",
+        back_populates="manager",
+        lazy="selectin",
+    )
     # (optional) tasks they created - handy but not required
     created_tasks = relationship(
         "Task",
@@ -116,6 +129,12 @@ class Client(Base):
     #relationship to Contact
     primary_contact_contact = relationship("Contact")
 
+    manual_entries = relationship(
+    "ClientManualEntry",
+    back_populates="client",
+    cascade="all, delete-orphan",
+    lazy="selectin",
+)
 class Account(Base):
     __tablename__ = "accounts"
 
@@ -374,7 +393,7 @@ class RecurringTemplateTask(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-
+    tier = Column(String, nullable=True)  # only apply this template to a tier
     schedule_type = Column(String, nullable=False, default="client_frequency")
     day_of_month = Column(Integer, nullable=True)
     weekday = Column(Integer, nullable=True)
@@ -495,6 +514,21 @@ class Task(Base):
         back_populates="task",
         cascade="all, delete-orphan",
     )
+    is_intercompany = Column(Boolean, nullable=False, default=False)
+
+    client_links = relationship(
+        "TaskClientLink",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    @property
+    def linked_client_ids(self):
+        if not getattr(self, "is_intercompany", False):
+            return None
+        links = getattr(self, "client_links", []) or []
+        return [l.client_id for l in links]
 
 class TaskSubtask(Base):
     __tablename__ = "task_subtasks"
@@ -544,6 +578,88 @@ class ClientUserAccess(Base):
 
     __table_args__ = (UniqueConstraint("client_id", "user_id", name="uq_client_user"),)
 
+# ----------- Task <-> Client links (Intercompany tasks) -----------
+class TaskClientLink(Base):
+    __tablename__ = "task_client_links"
+
+    task_id = Column(Integer, ForeignKey("tasks.id"), primary_key=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), primary_key=True)
+
+    is_completed = Column(Boolean, default=False, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    completed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    task = relationship("Task", back_populates="client_links")
+    client = relationship("Client")
+    completed_by = relationship("User", foreign_keys=[completed_by_id], lazy="joined")
+
+
+# ----------- Client <-> Client links (Related entities) -----------
+class ClientLink(Base):
+    __tablename__ = "client_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    related_client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    relationship_type = Column(String, nullable=False, default="intercompany")
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_by = relationship("User", foreign_keys=[created_by_id], lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "client_id", "related_client_id", "relationship_type",
+            name="uq_client_links"
+        ),
+    )
+
+
+# ----------- Client manual entries -----------
+class ClientManualEntry(Base):
+    __tablename__ = "client_manual_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
+
+    # daily / weekly / monthly / quarterly / yearly / projects / general
+    category = Column(String, nullable=False, default="general")
+
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    client = relationship("Client", back_populates="manual_entries")
+    task = relationship("Task")
+    created_by = relationship("User", foreign_keys=[created_by_id], lazy="joined")
+    updated_by = relationship("User", foreign_keys=[updated_by_id], lazy="joined")
+
+# ----------- Quick notes (floating bottom-right) -----------
+class QuickNote(Base):
+    __tablename__ = "quick_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    body = Column(Text, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    client = relationship("Client")
+    created_by = relationship("User", foreign_keys=[created_by_id], lazy="joined")
 
 # ----------- Admin App Settings -----------
 class AppSetting(Base):

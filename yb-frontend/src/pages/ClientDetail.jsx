@@ -6,9 +6,10 @@ import { useAuth } from "../context/AuthContext";
 import ClientDangerZone from "../components/clients/ClientDangerZone";
 import ClientNotesPanel from "../components/clients/ClientNote";
 import ClientTasksTab from "../components/clients/ClientTasksTab";
-
+import ClientManualTab from "../components/clients/ClientManualTab";
 const TABS = [
 	"Profile",
+	"Manual",
 	"Accounts",
 	"Statements",
 	"Documents",
@@ -215,6 +216,8 @@ export default function ClientDetail() {
 			)}
 
 			{activeTab === "Accounts" && <AccountsTab clientId={client.id} />}
+
+			{activeTab === "Manual" && <ClientManualTab clientId={client.id} />}
 
 			{activeTab === "Statements" && <StatementsTab client={client} />}
 
