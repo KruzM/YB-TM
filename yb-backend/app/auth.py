@@ -15,7 +15,7 @@ SECRET_KEY = os.getenv("YB_SECRET_KEY") or ""
 if not SECRET_KEY:
     raise RuntimeError("YB_SECRET_KEY environment variable is not set")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 8* 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

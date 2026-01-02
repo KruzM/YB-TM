@@ -249,8 +249,11 @@ class ClientIntake(Base):
     # 'yes', 'no', or 'unsure'
     qbo_status = Column(String, nullable=True)
     qbo_num_users = Column(Integer, nullable=True)
+    qbo_num_classes = Column(Integer, nullable=True)
+    qbo_num_locations = Column(Integer, nullable=True)
     qbo_needs_class_tracking = Column(Boolean, default=False, nullable=False)
     qbo_needs_location_tracking = Column(Boolean, default=False, nullable=False)
+
     # 'simple_start', 'essentials', 'plus', 'advanced'
     qbo_recommended_subscription = Column(String, nullable=True)
 
@@ -270,9 +273,13 @@ class ClientIntake(Base):
     non_business_deposits = Column(Boolean, default=False)
     personal_expenses_in_business = Column(Boolean, default=False)
     business_expenses_in_personal = Column(Boolean, default=False)
+    non_business_deposits_details = Column(Text, nullable=True)
+    personal_expenses_in_business_details = Column(Text, nullable=True)
+    business_expenses_in_personal_details = Column(Text, nullable=True)
 
     # Reporting / payroll
     report_frequency = Column(String, nullable=True)  # monthly / quarterly / annually
+    monthly_close_tier = Column(String, nullable=True)  
     income_tracking = Column(Text, nullable=True)
     payroll_provider = Column(String, nullable=True)
 

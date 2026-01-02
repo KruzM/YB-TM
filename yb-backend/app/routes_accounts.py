@@ -8,7 +8,7 @@ from .database import get_db
 from . import models, schemas
 from .auth import get_current_user
 from .permissions import assert_client_access
-
+from .accounts_seed import seed_default_accounts_for_client
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
@@ -32,6 +32,22 @@ async def list_accounts(
     )
     return accounts
 
+@router.post("/seed-defaults/{client_id}", response_model=List[schemas.AccountOut])
+async def seed_defaults(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    assert_client_access(db, current_user, client_id)
+    seed_default_accounts_for_client(db, client_id)
+    db.commit()
+
+    return (
+        db.query(models.Account)
+        .filter(models.Account.client_id == client_id)
+        .order_by(models.Account.name)
+        .all()
+    )
 
 @router.post(
     "/", response_model=schemas.AccountOut, status_code=status.HTTP_201_CREATED
@@ -52,7 +68,7 @@ async def create_account(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    account = models.Account(**account_in.dict())
+    account = models.Account(**account_in.model_dump())
     db.add(account)
     db.commit()
     db.refresh(account)

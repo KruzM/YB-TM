@@ -145,6 +145,17 @@ class RecurringRuleDraft(BaseModel):
     day_of_month: Optional[int] = None
     assigned_user_id: Optional[int] = None
 
+    @field_validator("day_of_month", "assigned_user_id", mode="before")
+    @classmethod
+    def _coerce_optional_ints(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        try:
+            return int(v)
+        except Exception:
+            return None
 class RecurringTaskBase(BaseModel):
     name: str
     description: Optional[str] = None
@@ -317,6 +328,30 @@ class IntakeConvertIn(BaseModel):
 
 # ---------- Client Intake ----------
 class ClientIntakeBase(BaseModel):
+    @field_validator(
+        "primary_contact_id",
+        "cpa_contact_id",
+        "manager_id",
+        "bookkeeper_id",
+        "qbo_num_users",
+        "qbo_num_classes",
+        "qbo_num_locations",
+        "num_checking",
+        "num_savings",
+        "num_credit_cards",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_ints(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        try:
+            return int(v)
+        except Exception:
+            return None
+
     @field_validator("custom_recurring_rules", mode="before")
     @classmethod
     def _parse_custom_rules(cls, v):
@@ -331,6 +366,7 @@ class ClientIntakeBase(BaseModel):
             except Exception:
                 return None
         return v
+
     # Basic business info
     legal_name: str
     dba_name: Optional[str] = None
@@ -365,12 +401,17 @@ class ClientIntakeBase(BaseModel):
     qbo_needs_class_tracking: Optional[bool] = None
     qbo_needs_location_tracking: Optional[bool] = None
     qbo_recommended_subscription: Optional[str] = None  # 'simple_start','essentials','plus','advanced'
+    qbo_num_classes: Optional[int] = None
+    qbo_num_locations: Optional[int] = None
 
     # Banking / accounts
     num_checking: Optional[int] = None
     checking_banks: Optional[str] = None
     num_savings: Optional[int] = None
     savings_banks: Optional[str] = None
+    checking_banks_other: Optional[str] = None
+    savings_banks_other: Optional[str] = None
+    credit_card_banks_other: Optional[str] = None
     num_credit_cards: Optional[int] = None
     credit_card_banks: Optional[str] = None
     loans: Optional[str] = None
@@ -382,12 +423,16 @@ class ClientIntakeBase(BaseModel):
     non_business_deposits: Optional[bool] = None
     personal_expenses_in_business: Optional[bool] = None
     business_expenses_in_personal: Optional[bool] = None
+    non_business_deposits_details: Optional[str] = None
+    personal_expenses_in_business_details: Optional[str] = None
+    business_expenses_in_personal_details: Optional[str] = None
 
     # Reporting / payroll
     report_frequency: Optional[str] = None
     income_tracking: Optional[str] = None
     payroll_provider: Optional[str] = None
-    
+    monthly_close_tier: Optional[str] = None
+
     # Payroll services requested
     payroll_needs_setup: Optional[bool] = None
     payroll_process_regular: Optional[bool] = None
@@ -395,6 +440,7 @@ class ClientIntakeBase(BaseModel):
     payroll_quarterly_filings: Optional[bool] = None
     payroll_state_local_payments: Optional[bool] = None
     payroll_calculate_hours_commission: Optional[bool] = None
+
     # Misc
     additional_notes: Optional[str] = None
 
@@ -406,6 +452,29 @@ class ClientIntakeCreate(ClientIntakeBase):
 
 class ClientIntakeUpdate(BaseModel):
     """Partial update; everything is optional."""
+    @field_validator(
+        "primary_contact_id",
+        "cpa_contact_id",
+        "manager_id",
+        "bookkeeper_id",
+        "qbo_num_users",
+        "qbo_num_classes",
+        "qbo_num_locations",
+        "num_checking",
+        "num_savings",
+        "num_credit_cards",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_ints(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        try:
+            return int(v)
+        except Exception:
+            return None
     status: Optional[str] = None  # new / in_progress / completed / archived
 
     legal_name: Optional[str] = None
@@ -434,6 +503,9 @@ class ClientIntakeUpdate(BaseModel):
     qbo_needs_class_tracking: Optional[bool] = None
     qbo_needs_location_tracking: Optional[bool] = None
     qbo_recommended_subscription: Optional[str] = None
+    qbo_num_classes: Optional[int] = None
+    qbo_num_locations: Optional[int] = None
+
 
     num_checking: Optional[int] = None
     checking_banks: Optional[str] = None
@@ -441,6 +513,9 @@ class ClientIntakeUpdate(BaseModel):
     savings_banks: Optional[str] = None
     num_credit_cards: Optional[int] = None
     credit_card_banks: Optional[str] = None
+    checking_banks_other: Optional[str] = None
+    savings_banks_other: Optional[str] = None
+    credit_card_banks_other: Optional[str] = None
     loans: Optional[str] = None
     vehicles: Optional[str] = None
     assets: Optional[str] = None
@@ -449,10 +524,14 @@ class ClientIntakeUpdate(BaseModel):
     non_business_deposits: Optional[bool] = None
     personal_expenses_in_business: Optional[bool] = None
     business_expenses_in_personal: Optional[bool] = None
+    non_business_deposits_details: Optional[str] = None
+    personal_expenses_in_business_details: Optional[str] = None
+    business_expenses_in_personal_details: Optional[str] = None
 
     report_frequency: Optional[str] = None
     income_tracking: Optional[str] = None
     payroll_provider: Optional[str] = None
+    monthly_close_tier: Optional[str] = None
 
     payroll_needs_setup: Optional[bool] = None
     payroll_process_regular: Optional[bool] = None

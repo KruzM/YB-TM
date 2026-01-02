@@ -2,6 +2,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from .database import get_db
@@ -11,40 +12,37 @@ from .auth import (
     create_access_token,
     get_password_hash,
     get_current_user,
+    ACCESS_TOKEN_EXPIRE_MINUTES
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=schemas.TokenResponse)
-async def login(
-    response: Response, email: str, password: str, db: Session = Depends(get_db)
+def login(
+    email: str,
+    password: str,
+    response: Response,
+    db: Session = Depends(get_db),
 ):
     user = authenticate_user(db, email, password)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-        )
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    access_token_expires = timedelta(minutes=60)
     token = create_access_token(
-        data={"sub": user.id, "role": user.role},
-        expires_delta=access_token_expires,
+        data={"sub": str(user.id)},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
-    # Cookie for Swagger / non-React usage
+    # cookie matches token lifetime (helps if you use cookie auth anywhere)
     response.set_cookie(
-        key="access_token",
-        value=f"Bearer {token}",
+        "access_token",
+        value=token,
         httponly=True,
-        max_age=60 * 60,
-        expires=60 * 60,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         samesite="lax",
-        secure=False,
     )
 
-    # Token body for React
     return {"access_token": token, "token_type": "bearer"}
 
 

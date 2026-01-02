@@ -2,12 +2,28 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../api/client";
+const STEPS = [
+	{ key: "biz", label: "Business & contacts" },
+	{ key: "start", label: "Starting point" },
+	{ key: "accounts", label: "Accounts" },
+	{ key: "access", label: "Access & systems" },
+	{ key: "scope", label: "Reporting & scope" },
+	{ key: "wrap", label: "Recurring & notes" },
+	{ key: "review", label: "Review" },
+];
 
 const REPORT_FREQ_OPTIONS = [
 	{ value: "", label: "Select frequency" },
 	{ value: "monthly", label: "Monthly" },
 	{ value: "quarterly", label: "Quarterly" },
 	{ value: "annual", label: "Annual" },
+];
+
+const MONTHLY_CLOSE_TIER_OPTIONS = [
+	{ value: "", label: "Select due-by tier" },
+	{ value: "5th", label: "Due by 5th" },
+	{ value: "10th", label: "Due by 10th" },
+	{ value: "15th", label: "Due by 15th" },
 ];
 
 const PAYROLL_PROVIDER_OPTIONS = [
@@ -42,6 +58,7 @@ const initialFormState = {
 	tax_structure: "",
 	owners: "",
 	tax_id: "",
+	cpa_contact_id: "",
 
 	// Primary contact
 	primary_contact_name: "",
@@ -55,6 +72,8 @@ const initialFormState = {
 	qbo_num_users: "",
 	qbo_needs_class_tracking: false,
 	qbo_needs_location_tracking: false,
+	qbo_num_classes: "",
+	qbo_num_locations: "",
 	allow_login_access: true,
 	manager_id: "",
 	bookkeeper_id: "",
@@ -75,6 +94,7 @@ const initialFormState = {
 	loans: "",
 	vehicles: "",
 	assets: "",
+	monthly_close_tier: "",
 
 	// Transaction behaviour / payments
 	payment_methods: "",
@@ -112,6 +132,7 @@ function toIntOrNull(val) {
 	const n = Number(val);
 	return Number.isNaN(n) ? null : n;
 }
+
 function computeQboRecommendation(form) {
 	if (form.qbo_status !== "no") return null;
 
@@ -119,21 +140,41 @@ function computeQboRecommendation(form) {
 	const needsClass = !!form.qbo_needs_class_tracking;
 	const needsLocation = !!form.qbo_needs_location_tracking;
 
-	let subscription = "simple_start";
-	if (numUsers > 1) subscription = "essentials";
-	if (needsClass || needsLocation) subscription = "plus";
+	const numClasses = toIntOrNull(form.qbo_num_classes) || 0;
+	const numLocations = toIntOrNull(form.qbo_num_locations) || 0;
+
+	// Base recommendation by user count
+	let subscription = "Simple Start";
+	if (numUsers >= 2 && numUsers <= 3) subscription = "Essentials";
+	if (numUsers >= 4 && numUsers <= 5) subscription = "Plus";
+	if (numUsers > 5) subscription = "Advanced";
+
+	// Force minimum Plus if class/location tracking needed
+	if (
+		(needsClass || needsLocation) &&
+		(subscription === "Simple Start" || subscription === "Essentials")
+	) {
+		subscription = "Plus";
+	}
+
+	// Force Advanced if > 40 classes or locations
+	if ((needsClass && numClasses > 40) || (needsLocation && numLocations > 40)) {
+		subscription = "Advanced";
+	}
+
 	return subscription;
 }
 
-// Helper: map stored string -> {selectValue, otherText}
+// Helper: map stored string -> {selectValue, otherText}F
 function resolveStringToSelectAndOther(stored, options) {
 	const trimmed = (stored || "").trim();
 	if (!trimmed) return { value: "", otherText: "" };
 
-	const match = options.find((opt) => opt.label === trimmed);
+	const match = options.find(
+		(opt) => opt.label === trimmed || opt.value === trimmed
+	);
 	if (match) return { value: match.value, otherText: "" };
 
-	// Could be multiple banks or a custom name - treat as "other"
 	return { value: "other", otherText: trimmed };
 }
 
@@ -147,6 +188,129 @@ export default function ClientIntake() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [success, setSuccess] = useState("");
+	const [stepIdx, setStepIdx] = useState(0);
+	const step = STEPS[stepIdx];
+
+	const goNext = () => setStepIdx((i) => Math.min(i + 1, STEPS.length - 1));
+	const goBack = () => setStepIdx((i) => Math.max(i - 1, 0));
+	const validateStep = (key) => {
+		// return a string message if invalid, otherwise null
+		if (key === "biz") {
+			if (!form.legal_name.trim()) return "Legal business name is required.";
+			return null;
+		}
+
+		if (key === "start") {
+			if (!form.qbo_status)
+				return "Please choose a QBO status (Yes / No / Unsure).";
+
+			if (form.qbo_status === "no") {
+				if (
+					form.qbo_needs_class_tracking &&
+					!String(form.qbo_num_classes || "").trim()
+				) {
+					return "Please enter an approximate # of classes (or uncheck class tracking).";
+				}
+				if (
+					form.qbo_needs_location_tracking &&
+					!String(form.qbo_num_locations || "").trim()
+				) {
+					return "Please enter an approximate # of locations (or uncheck location tracking).";
+				}
+			}
+
+			return null;
+		}
+
+		if (key === "accounts") {
+			const needsBankIfCount = (countStr, bankVal, label) => {
+				const n = toIntOrNull(countStr) || 0;
+				if (n > 0 && !bankVal)
+					return `Please select a bank for ${label} (or set the count to 0).`;
+				return null;
+			};
+
+			if (!checkingMulti) {
+				const msg = needsBankIfCount(
+					form.num_checking,
+					form.checking_banks,
+					"checking"
+				);
+				if (msg) return msg;
+			}
+			if (!savingsMulti) {
+				const msg = needsBankIfCount(
+					form.num_savings,
+					form.savings_banks,
+					"savings"
+				);
+				if (msg) return msg;
+			}
+			if (!creditMulti) {
+				const msg = needsBankIfCount(
+					form.num_credit_cards,
+					form.credit_card_banks,
+					"credit cards"
+				);
+				if (msg) return msg;
+			}
+
+			return null;
+		}
+
+		if (key === "scope") {
+			if (form.report_frequency === "monthly" && !form.monthly_close_tier) {
+				return "Monthly close tier is required when Report frequency is Monthly.";
+			}
+			if (
+				form.payroll_provider === "other" &&
+				!form.payroll_provider_other.trim()
+			) {
+				return "Please enter the payroll provider name (or pick one from the list).";
+			}
+			return null;
+		}
+
+		if (key === "wrap") {
+			const rules = form.custom_recurring_rules || [];
+			for (const r of rules) {
+				if (!String(r.title || "").trim())
+					return "Custom recurring tasks: Task name is required.";
+				const dom = Number(r.day_of_month);
+				if (!Number.isFinite(dom) || dom < 1 || dom > 31) {
+					return "Custom recurring tasks: Day of month must be 1-31.";
+				}
+			}
+			return null;
+		}
+
+		return null;
+	};
+
+	const jumpToStep = (targetIdx) => {
+		// if jumping forward, validate current step first
+		if (targetIdx > stepIdx) {
+			const msg = validateStep(step.key);
+			if (msg) {
+				setError(msg);
+				return;
+			}
+		}
+		setError("");
+		setSuccess("");
+		setStepIdx(targetIdx);
+	};
+
+	const handleNextStep = () => {
+		const msg = validateStep(step.key);
+		if (msg) {
+			setError(msg);
+			return;
+		}
+		setError("");
+		setSuccess("");
+		goNext();
+	};
 
 	// Contacts for dropdown
 	const [contacts, setContacts] = useState([]);
@@ -286,6 +450,9 @@ export default function ClientIntake() {
 					qbo_num_users,
 					qbo_needs_class_tracking,
 					qbo_needs_location_tracking,
+					qbo_num_classes,
+					qbo_num_locations,
+
 					allow_login_access,
 					num_checking,
 					checking_banks,
@@ -301,6 +468,7 @@ export default function ClientIntake() {
 					personal_expenses_in_business,
 					business_expenses_in_personal,
 					report_frequency,
+					monthly_close_tier,
 					income_tracking,
 					payroll_provider,
 					payroll_needs_setup,
@@ -342,12 +510,13 @@ export default function ClientIntake() {
 					primary_contact_email: primary_contact_email || "",
 					primary_contact_phone: primary_contact_phone || "",
 					bookkeeping_start_date: bookkeeping_start_date || "",
-					qbo_status:
-						qbo_exists === true
-							? "yes"
-							: qbo_exists === false
-							? "no"
-							: "unsure",
+					qbo_status: intake.qbo_status
+						? intake.qbo_status
+						: qbo_exists === true
+						? "yes"
+						: qbo_exists === false
+						? "no"
+						: "",
 
 					qbo_num_users:
 						qbo_num_users === null || qbo_num_users === undefined
@@ -355,6 +524,14 @@ export default function ClientIntake() {
 							: String(qbo_num_users),
 					qbo_needs_class_tracking: !!qbo_needs_class_tracking,
 					qbo_needs_location_tracking: !!qbo_needs_location_tracking,
+					qbo_num_classes:
+						qbo_num_classes === null || qbo_num_classes === undefined
+							? ""
+							: String(qbo_num_classes),
+					qbo_num_locations:
+						qbo_num_locations === null || qbo_num_locations === undefined
+							? ""
+							: String(qbo_num_locations),
 					allow_login_access:
 						allow_login_access === null || allow_login_access === undefined
 							? true
@@ -396,6 +573,7 @@ export default function ClientIntake() {
 					business_expenses_in_personal: !!business_expenses_in_personal,
 
 					report_frequency: report_frequency || "",
+					monthly_close_tier: monthly_close_tier || "",
 					income_tracking: income_tracking || "",
 
 					payroll_provider: payrollResolved.value,
@@ -445,6 +623,24 @@ export default function ClientIntake() {
 				primary_contact_name: selected?.name ?? prev.primary_contact_name,
 				primary_contact_email: selected?.email ?? prev.primary_contact_email,
 				primary_contact_phone: selected?.phone ?? prev.primary_contact_phone,
+			}));
+		} else if (name === "report_frequency") {
+			setForm((prev) => ({
+				...prev,
+				report_frequency: value,
+				monthly_close_tier: value === "monthly" ? prev.monthly_close_tier : "",
+			}));
+		} else if (name === "qbo_needs_class_tracking") {
+			setForm((prev) => ({
+				...prev,
+				qbo_needs_class_tracking: checked,
+				qbo_num_classes: checked ? prev.qbo_num_classes : "",
+			}));
+		} else if (name === "qbo_needs_location_tracking") {
+			setForm((prev) => ({
+				...prev,
+				qbo_needs_location_tracking: checked,
+				qbo_num_locations: checked ? prev.qbo_num_locations : "",
 			}));
 		} else {
 			setForm((prev) => ({
@@ -544,6 +740,10 @@ export default function ClientIntake() {
 			primary_contact_name: form.primary_contact_name.trim() || null,
 			primary_contact_email: form.primary_contact_email.trim() || null,
 			primary_contact_phone: form.primary_contact_phone.trim() || null,
+			primary_contact_id: form.primary_contact_id
+				? Number(form.primary_contact_id)
+				: null,
+			cpa_contact_id: form.cpa_contact_id ? Number(form.cpa_contact_id) : null,
 
 			bookkeeping_start_date: form.bookkeeping_start_date || null,
 			qbo_exists: qboExists,
@@ -551,11 +751,17 @@ export default function ClientIntake() {
 			manager_id: form.manager_id ? Number(form.manager_id) : null,
 			bookkeeper_id: form.bookkeeper_id ? Number(form.bookkeeper_id) : null,
 
+			monthly_close_tier:
+				form.report_frequency === "monthly"
+					? form.monthly_close_tier || null
+					: null,
 			qbo_status: form.qbo_status || null,
 			qbo_num_users: toIntOrNull(form.qbo_num_users),
 			qbo_needs_class_tracking: form.qbo_needs_class_tracking,
 			qbo_needs_location_tracking: form.qbo_needs_location_tracking,
 			qbo_recommended_subscription: qboRecommendation,
+			qbo_num_classes: toIntOrNull(form.qbo_num_classes),
+			qbo_num_locations: toIntOrNull(form.qbo_num_locations),
 			// Checking
 			...(checkingMulti
 				? (() => {
@@ -644,7 +850,21 @@ export default function ClientIntake() {
 			setError("Legal business name is required.");
 			return;
 		}
+		if (form.report_frequency === "monthly" && !form.monthly_close_tier) {
+			setSaving(false);
+			setError(
+				"Monthly close tier is required when Report frequency is Monthly."
+			);
+			return;
+		}
 
+		if (convertAfter && (!form.manager_id || !form.bookkeeper_id)) {
+			setSaving(false);
+			setError(
+				"Manager and Bookkeeper must be assigned before converting to a client."
+			);
+			return;
+		}
 		try {
 			const payload = buildPayload(); // ? build first
 
@@ -799,396 +1019,925 @@ export default function ClientIntake() {
 				</div>
 			)}
 
+			{/* Step pills */}
+			<div className="flex flex-wrap gap-2">
+				{STEPS.map((s, i) => (
+					<button
+						key={s.key}
+						type="button"
+						onClick={() => jumpToStep(i)}
+						className={`text-[11px] px-3 py-1.5 rounded-full border ${
+							i === stepIdx
+								? "bg-yecny-primary text-white border-yecny-primary"
+								: "bg-white text-yecny-slate border-slate-200 hover:bg-slate-50"
+						}`}
+					>
+						{i + 1}. {s.label}
+					</button>
+				))}
+			</div>
+
 			{/* Form */}
 			<form
 				onSubmit={handleSubmit}
 				className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-8"
 			>
-				{/* Business details */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Business details
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							Core information about the business.
-						</p>
-					</div>
-
-					<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Legal business name <span className="text-red-500">*</span>
-							</label>
-							<input
-								type="text"
-								name="legal_name"
-								value={form.legal_name}
-								onChange={handleChange}
-								placeholder="Example: Amazon LLC"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								required
-							/>
-						</div>
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								DBA name
-							</label>
-							<input
-								type="text"
-								name="dba_name"
-								value={form.dba_name}
-								onChange={handleChange}
-								placeholder="Doing business as..."
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Tax structure / entity type
-							</label>
-							<input
-								type="text"
-								name="tax_structure"
-								value={form.tax_structure}
-								onChange={handleChange}
-								placeholder="Single-member LLC, S-Corp, Partnership..."
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Tax ID (EIN, SSN, etc.)
-							</label>
-							<input
-								type="text"
-								name="tax_id"
-								value={form.tax_id}
-								onChange={handleChange}
-								placeholder="Employer Identification Number or SSN"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Owners & ownership %
-							</label>
-							<textarea
-								name="owners"
-								value={form.owners}
-								onChange={handleChange}
-								rows={3}
-								placeholder="List owners and approximate ownership percentages."
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-
-						<div className="md:col-span-2">
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Business address
-							</label>
-							<input
-								type="text"
-								name="business_address"
-								value={form.business_address}
-								onChange={handleChange}
-								placeholder="Street, City, State, ZIP"
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-					</div>
-				</section>
-
-				{/* Primary contact */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Primary contact
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							Who should Yecny reach out to with questions?
-						</p>
-					</div>
-
-					<div className="space-y-3">
-						{/* Link to existing contact */}
-						<div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
-							<div className="flex-1">
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Link to existing contact (optional)
-								</label>
-								<select
-									name="primary_contact_id"
-									value={form.primary_contact_id}
-									onChange={handleChange}
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								>
-									<option value="">
-										{contactsLoading
-											? "Loading contacts..."
-											: "No linked contact"}
-									</option>
-									{contacts.map((c) => (
-										<option key={c.id} value={c.id}>
-											{c.name}
-											{c.email ? ` (${c.email})` : ""}
-										</option>
-									))}
-								</select>
-							</div>
-							{contactsError && (
-								<div className="text-[11px] text-red-600 mt-1 sm:mb-1">
-									{contactsError}
-								</div>
-							)}
-						</div>
-
-						{/* Manual contact details */}
-						<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+				{/* STEP: Business & contacts */}
+				{step.key === "biz" && (
+					<>
+						{/* Business details */}
+						<section className="space-y-4">
 							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Contact name
-								</label>
-								<input
-									type="text"
-									name="primary_contact_name"
-									value={form.primary_contact_name}
-									onChange={handleChange}
-									placeholder="Full name"
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
-							</div>
-							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Email
-								</label>
-								<input
-									type="email"
-									name="primary_contact_email"
-									value={form.primary_contact_email}
-									onChange={handleChange}
-									placeholder="name@example.com"
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
-							</div>
-
-							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Phone
-								</label>
-								<input
-									type="tel"
-									name="primary_contact_phone"
-									value={form.primary_contact_phone}
-									onChange={handleChange}
-									placeholder="Best contact number"
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
-							</div>
-						</div>
-					</div>
-				</section>
-
-				{/* Bookkeeping start & access */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Bookkeeping start & access
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							When should we start, and what systems are already in place?
-						</p>
-					</div>
-					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Bookkeeping start date
-							</label>
-							<input
-								type="date"
-								name="bookkeeping_start_date"
-								value={form.bookkeeping_start_date}
-								onChange={handleChange}
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-
-						{/* QBO status */}
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Do they already have QuickBooks Online?
-							</label>
-							<div className="flex flex-col gap-1 text-xs">
-								<label className="inline-flex items-center gap-2">
-									<input
-										type="radio"
-										name="qbo_status"
-										value="yes"
-										checked={form.qbo_status === "yes"}
-										onChange={handleChange}
-									/>
-									<span>Yes, they already have QBO</span>
-								</label>
-								<label className="inline-flex items-center gap-2">
-									<input
-										type="radio"
-										name="qbo_status"
-										value="no"
-										checked={form.qbo_status === "no"}
-										onChange={handleChange}
-									/>
-									<span>No, they will need a new subscription</span>
-								</label>
-								<label className="inline-flex items-center gap-2">
-									<input
-										type="radio"
-										name="qbo_status"
-										value="unsure"
-										checked={form.qbo_status === "unsure"}
-										onChange={handleChange}
-									/>
-									<span>Unsure / to be confirmed</span>
-								</label>
-							</div>
-						</div>
-
-						{/* QBO subscription planning */}
-						{form.qbo_status === "no" && (
-							<div className="mt-4 border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 space-y-3 md:col-span-1">
-								<div className="text-xs font-medium text-yecny-charcoal">
-									QBO subscription planning
-								</div>
-								<div className="grid grid-cols-1 gap-4 text-xs">
-									<div>
-										<label className="block font-medium text-yecny-slate mb-1">
-											How many QBO users will they need?
-										</label>
-										<input
-											type="number"
-											name="qbo_num_users"
-											min="1"
-											value={form.qbo_num_users}
-											onChange={handleChange}
-											className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-											placeholder="1"
-										/>
-										<p className="mt-1 text-[11px] text-slate-500">
-											If more than 1 user, they&apos;ll need at least
-											Essentials.
-										</p>
-									</div>
-									<div className="space-y-2">
-										<div className="font-medium text-yecny-slate mb-1">
-											Advanced features needed?
-										</div>
-										<label className="flex items-start gap-2">
-											<input
-												type="checkbox"
-												name="qbo_needs_class_tracking"
-												checked={form.qbo_needs_class_tracking}
-												onChange={handleChange}
-												className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-											/>
-											<span>They need class tracking</span>
-										</label>
-										<label className="flex items-start gap-2">
-											<input
-												type="checkbox"
-												name="qbo_needs_location_tracking"
-												checked={form.qbo_needs_location_tracking}
-												onChange={handleChange}
-												className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-											/>
-											<span>They need location tracking</span>
-										</label>
-									</div>
-
-									<div className="space-y-1">
-										<div className="font-medium text-yecny-slate mb-1">
-											Recommended subscription
-										</div>
-										<div className="inline-flex items-center px-3 py-1.5 rounded-full bg-white border border-slate-200 text-[11px] text-yecny-charcoal">
-											{(() => {
-												const rec = computeQboRecommendation(form);
-												if (!rec) return "Will confirm later";
-
-												if (rec === "simple_start") return "Simple Start";
-												if (rec === "essentials") return "Essentials";
-												if (rec === "plus") return "Plus";
-												return rec;
-											})()}
-										</div>
-										<p className="mt-1 text-[11px] text-slate-500">
-											This will be saved on the intake so you can confirm with
-											the client and Jason when scoping.
-										</p>
-									</div>
-								</div>
-							</div>
-						)}
-						{/* Assignment */}
-						<div className="md:col-span-3 border border-slate-100 rounded-lg p-4 bg-slate-50/50 space-y-3">
-							<div className="flex items-start justify-between gap-3">
-								<div>
-									<div className="text-xs font-medium text-yecny-charcoal">
-										Internal assignment (optional)
-									</div>
-									<p className="text-[11px] text-slate-500 mt-0.5">
-										You can leave these blank during the discovery call and set
-										them later before converting.
-									</p>
-								</div>
-								{usersError && (
-									<div className="text-[11px] text-red-600">{usersError}</div>
-								)}
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Business details
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									Core information about the business.
+								</p>
 							</div>
 
 							<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 								<div>
 									<label className="block text-xs font-medium text-yecny-slate mb-1">
-										Manager
+										Legal business name <span className="text-red-500">*</span>
 									</label>
-									<select
-										name="manager_id"
-										value={form.manager_id}
+									<input
+										type="text"
+										name="legal_name"
+										value={form.legal_name}
 										onChange={handleChange}
-										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-									>
-										<option value="">
-											{usersLoading ? "Loading users..." : "Unassigned"}
-										</option>
-										{users.map((u) => (
-											<option key={u.id} value={u.id}>
-												{u.name} ({u.role})
-											</option>
-										))}
-									</select>
+										placeholder="Example: Amazon LLC"
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										required
+									/>
 								</div>
 								<div>
 									<label className="block text-xs font-medium text-yecny-slate mb-1">
-										Bookkeeper
+										DBA name
 									</label>
-									<select
-										name="bookkeeper_id"
-										value={form.bookkeeper_id}
+									<input
+										type="text"
+										name="dba_name"
+										value={form.dba_name}
 										onChange={handleChange}
-										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-									>
-										<option value="">
-											{usersLoading ? "Loading users..." : "Unassigned"}
-										</option>
-										{users.map((u) => (
-											<option key={u.id} value={u.id}>
-												{u.name} ({u.role})
-											</option>
-										))}
-									</select>
+										placeholder="Doing business as..."
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
+
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Tax structure / entity type
+									</label>
+									<input
+										type="text"
+										name="tax_structure"
+										value={form.tax_structure}
+										onChange={handleChange}
+										placeholder="Single-member LLC, S-Corp, Partnership..."
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
+
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Tax ID (EIN, SSN, etc.)
+									</label>
+									<input
+										type="text"
+										name="tax_id"
+										value={form.tax_id}
+										onChange={handleChange}
+										placeholder="Employer Identification Number or SSN"
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
+
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Owners &amp; ownership %
+									</label>
+									<textarea
+										name="owners"
+										value={form.owners}
+										onChange={handleChange}
+										rows={3}
+										placeholder="List owners and approximate ownership percentages."
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
+
+								<div className="md:col-span-2">
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Business address
+									</label>
+									<input
+										type="text"
+										name="business_address"
+										value={form.business_address}
+										onChange={handleChange}
+										placeholder="Street, City, State, ZIP"
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
 								</div>
 							</div>
-						</div>
+						</section>
 
+						{/* Primary contact */}
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Primary contact
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									Who should Yecny reach out to with questions?
+								</p>
+							</div>
+							<div className="space-y-3">
+								{/* Link to existing contact */}
+								<div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
+									<div className="flex-1">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Link to existing contact (optional)
+										</label>
+										<select
+											name="primary_contact_id"
+											value={form.primary_contact_id}
+											onChange={handleChange}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										>
+											<option value="">
+												{contactsLoading
+													? "Loading contacts..."
+													: "No linked contact"}
+											</option>
+											{contacts.map((c) => (
+												<option key={c.id} value={c.id}>
+													{c.name}
+													{c.email ? ` (${c.email})` : ""}
+												</option>
+											))}
+										</select>
+									</div>
+									{contactsError && (
+										<div className="text-[11px] text-red-600 mt-1 sm:mb-1">
+											{contactsError}
+										</div>
+									)}
+								</div>
+
+								<div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
+									<div className="flex-1">
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											CPA contact (optional)
+										</label>
+										<select
+											name="cpa_contact_id"
+											value={form.cpa_contact_id}
+											onChange={handleChange}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+										>
+											<option value="">
+												{contactsLoading
+													? "Loading contacts..."
+													: "No CPA linked"}
+											</option>
+											{contacts.map((c) => (
+												<option key={c.id} value={c.id}>
+													{c.name}
+													{c.email ? ` (${c.email})` : ""}
+												</option>
+											))}
+										</select>
+									</div>
+								</div>
+
+								{/* Manual contact details */}
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Contact name
+										</label>
+										<input
+											type="text"
+											name="primary_contact_name"
+											value={form.primary_contact_name}
+											onChange={handleChange}
+											placeholder="Full name"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Email
+										</label>
+										<input
+											type="email"
+											name="primary_contact_email"
+											value={form.primary_contact_email}
+											onChange={handleChange}
+											placeholder="name@example.com"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Phone
+										</label>
+										<input
+											type="tel"
+											name="primary_contact_phone"
+											value={form.primary_contact_phone}
+											onChange={handleChange}
+											placeholder="Best contact number"
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+								</div>
+							</div>
+						</section>
+					</>
+				)}
+
+				{/* STEP: Starting point */}
+				{step.key === "start" && (
+					<>
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Bookkeeping start &amp; access
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									When should we start, and what systems are already in place?
+								</p>
+							</div>
+
+							<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Bookkeeping start date
+									</label>
+									<input
+										type="date"
+										name="bookkeeping_start_date"
+										value={form.bookkeeping_start_date}
+										onChange={handleChange}
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
+							</div>
+
+							{/* QBO status */}
+							<div>
+								<label className="block text-xs font-medium text-yecny-slate mb-1">
+									Do they already have QuickBooks Online?
+								</label>
+								<div className="flex flex-col gap-1 text-xs">
+									<label className="inline-flex items-center gap-2">
+										<input
+											type="radio"
+											name="qbo_status"
+											value="yes"
+											checked={form.qbo_status === "yes"}
+											onChange={handleChange}
+										/>
+										<span>Yes, they already have QBO</span>
+									</label>
+
+									<label className="inline-flex items-center gap-2">
+										<input
+											type="radio"
+											name="qbo_status"
+											value="no"
+											checked={form.qbo_status === "no"}
+											onChange={handleChange}
+										/>
+										<span>No, they will need a new subscription</span>
+									</label>
+									<label className="inline-flex items-center gap-2">
+										<input
+											type="radio"
+											name="qbo_status"
+											value="unsure"
+											checked={form.qbo_status === "unsure"}
+											onChange={handleChange}
+										/>
+										<span>Unsure / to be confirmed</span>
+									</label>
+								</div>
+							</div>
+
+							{/* QBO subscription planning */}
+							{form.qbo_status === "no" && (
+								<div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 space-y-3">
+									<div className="text-xs font-medium text-yecny-charcoal">
+										QBO subscription planning
+									</div>
+
+									<div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+										<div>
+											<label className="block font-medium text-yecny-slate mb-1">
+												How many QBO users will they need?
+											</label>
+											<input
+												type="number"
+												name="qbo_num_users"
+												min="1"
+												value={form.qbo_num_users}
+												onChange={handleChange}
+												className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												placeholder="1"
+											/>
+											<p className="mt-1 text-[11px] text-slate-500">
+												If more than 1 user, they&apos;ll need at least
+												Essentials.
+											</p>
+										</div>
+
+										<div className="space-y-2 md:col-span-1">
+											<div className="font-medium text-yecny-slate mb-1">
+												Advanced features needed?
+											</div>
+
+											<div className="space-y-2">
+												<label className="flex items-start gap-2">
+													<input
+														type="checkbox"
+														name="qbo_needs_class_tracking"
+														checked={form.qbo_needs_class_tracking}
+														onChange={handleChange}
+														className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+													/>
+													<span>They need class tracking</span>
+												</label>
+
+												{form.qbo_needs_class_tracking && (
+													<div className="ml-6">
+														<label className="block text-[11px] font-medium text-yecny-slate mb-1">
+															Approx # of classes
+														</label>
+														<input
+															type="number"
+															name="qbo_num_classes"
+															value={form.qbo_num_classes}
+															onChange={handleChange}
+															className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+														/>
+													</div>
+												)}
+												<label className="flex items-start gap-2">
+													<input
+														type="checkbox"
+														name="qbo_needs_location_tracking"
+														checked={form.qbo_needs_location_tracking}
+														onChange={handleChange}
+														className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+													/>
+													<span>They need location tracking</span>
+												</label>
+
+												{form.qbo_needs_location_tracking && (
+													<div className="ml-6">
+														<label className="block text-[11px] font-medium text-yecny-slate mb-1">
+															Approx # of locations
+														</label>
+														<input
+															type="number"
+															name="qbo_num_locations"
+															value={form.qbo_num_locations}
+															onChange={handleChange}
+															className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+														/>
+													</div>
+												)}
+											</div>
+										</div>
+
+										<div className="space-y-1">
+											<div className="font-medium text-yecny-slate mb-1">
+												Recommended subscription
+											</div>
+											<div className="inline-flex items-center px-3 py-1.5 rounded-full bg-white border border-slate-200 text-[11px] text-yecny-charcoal">
+												{computeQboRecommendation(form) || "Will confirm later"}
+											</div>
+											<p className="mt-1 text-[11px] text-slate-500">
+												This will be saved on the intake so you can confirm with
+												the client and Jason when scoping.
+											</p>
+										</div>
+									</div>
+								</div>
+							)}
+
+							{/* Assignment */}
+							<div className="border border-slate-100 rounded-lg p-4 bg-slate-50/50 space-y-3">
+								<div className="flex items-start justify-between gap-3">
+									<div>
+										<div className="text-xs font-medium text-yecny-charcoal">
+											Internal assignment (optional)
+										</div>
+										<p className="text-[11px] text-slate-500 mt-0.5">
+											You can leave these blank during the discovery call and
+											set them later before converting.
+										</p>
+									</div>
+									{usersError && (
+										<div className="text-[11px] text-red-600">{usersError}</div>
+									)}
+								</div>
+
+								<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Manager
+										</label>
+										<select
+											name="manager_id"
+											value={form.manager_id}
+											onChange={handleChange}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										>
+											<option value="">
+												{usersLoading ? "Loading users..." : "Unassigned"}
+											</option>
+											{users.map((u) => (
+												<option key={u.id} value={u.id}>
+													{u.name} ({u.role})
+												</option>
+											))}
+										</select>
+									</div>
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Bookkeeper
+										</label>
+										<select
+											name="bookkeeper_id"
+											value={form.bookkeeper_id}
+											onChange={handleChange}
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										>
+											<option value="">
+												{usersLoading ? "Loading users..." : "Unassigned"}
+											</option>
+											{users.map((u) => (
+												<option key={u.id} value={u.id}>
+													{u.name} ({u.role})
+												</option>
+											))}
+										</select>
+									</div>
+								</div>
+							</div>
+						</section>
+					</>
+				)}
+
+				{/* STEP: Accounts */}
+				{step.key === "accounts" && (
+					<>
+						{/* Banking & accounts */}
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Banking &amp; accounts
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									How many accounts are we tracking, and where are they held?
+								</p>
+							</div>
+
+							<div className="space-y-4">
+								{/* Checking accounts */}
+								<div className="border border-slate-100 rounded-md p-3 space-y-3">
+									<div className="flex items-center justify-between">
+										<div className="text-xs font-medium text-yecny-slate">
+											Checking accounts
+										</div>
+										<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+											<input
+												type="checkbox"
+												checked={checkingMulti}
+												onChange={(e) => setCheckingMulti(e.target.checked)}
+												className="h-3 w-3"
+											/>
+											<span>Multiple banks?</span>
+										</label>
+									</div>
+
+									{!checkingMulti ? (
+										<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													# of business checking accounts
+												</label>
+												<input
+													type="number"
+													name="num_checking"
+													value={form.num_checking}
+													onChange={handleChange}
+													min="0"
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											</div>
+											<div className="md:col-span-2">
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Checking banks
+												</label>
+												<div className="flex flex-col sm:flex-row gap-2">
+													<select
+														name="checking_banks"
+														value={form.checking_banks}
+														onChange={handleChange}
+														className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+													>
+														{BANK_OPTIONS.map((opt) => (
+															<option key={opt.value} value={opt.value}>
+																{opt.label}
+															</option>
+														))}
+													</select>
+
+													{form.checking_banks === "other" && (
+														<input
+															type="text"
+															name="checking_banks_other"
+															value={form.checking_banks_other}
+															onChange={handleChange}
+															placeholder="Example: Wells Fargo, Chase"
+															className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+														/>
+													)}
+												</div>
+												<p className="mt-1 text-[11px] text-slate-500">
+													Use &quot;Other / Add new&quot; if their bank
+													isn&apos;t listed, or switch on &quot;Multiple
+													banks?&quot; to specify counts by bank.
+												</p>
+											</div>
+										</div>
+									) : (
+										<div className="space-y-2">
+											<div className="text-[11px] text-slate-500">
+												Add a row per bank and indicate how many checking
+												accounts they have at each.
+											</div>
+											<div className="space-y-2">
+												{checkingRows.map((row, index) => (
+													<div
+														key={index}
+														className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+													>
+														<select
+															value={row.bank}
+															onChange={(e) =>
+																updateCheckingRow(index, "bank", e.target.value)
+															}
+															className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+														>
+															{BANK_OPTIONS.map((opt) => (
+																<option key={opt.value} value={opt.value}>
+																	{opt.label}
+																</option>
+															))}
+														</select>
+														<input
+															type="number"
+															min="0"
+															value={row.count}
+															onChange={(e) =>
+																updateCheckingRow(
+																	index,
+																	"count",
+																	e.target.value
+																)
+															}
+															className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+															placeholder="#"
+														/>
+														{checkingRows.length > 1 && (
+															<button
+																type="button"
+																onClick={() => removeCheckingRow(index)}
+																className="text-[11px] text-red-600 hover:underline"
+															>
+																Remove
+															</button>
+														)}
+													</div>
+												))}
+											</div>
+											<button
+												type="button"
+												onClick={addCheckingRow}
+												className="text-[11px] text-yecny-primary hover:underline"
+											>
+												+ Add bank
+											</button>
+										</div>
+									)}
+								</div>
+
+								{/* Savings accounts */}
+								<div className="border border-slate-100 rounded-md p-3 space-y-3">
+									<div className="flex items-center justify-between">
+										<div className="text-xs font-medium text-yecny-slate">
+											Savings accounts
+										</div>
+										<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+											<input
+												type="checkbox"
+												checked={savingsMulti}
+												onChange={(e) => setSavingsMulti(e.target.checked)}
+												className="h-3 w-3"
+											/>
+											<span>Multiple banks?</span>
+										</label>
+									</div>
+
+									{!savingsMulti ? (
+										<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													# of business savings accounts
+												</label>
+												<input
+													type="number"
+													name="num_savings"
+													value={form.num_savings}
+													onChange={handleChange}
+													min="0"
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											</div>
+
+											<div className="md:col-span-2">
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Savings banks
+												</label>
+												<div className="flex flex-col sm:flex-row gap-2">
+													<select
+														name="savings_banks"
+														value={form.savings_banks}
+														onChange={handleChange}
+														className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+													>
+														{BANK_OPTIONS.map((opt) => (
+															<option key={opt.value} value={opt.value}>
+																{opt.label}
+															</option>
+														))}
+													</select>
+
+													{form.savings_banks === "other" && (
+														<input
+															type="text"
+															name="savings_banks_other"
+															value={form.savings_banks_other}
+															onChange={handleChange}
+															placeholder="Banks where savings accounts are held"
+															className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+														/>
+													)}
+												</div>
+											</div>
+										</div>
+									) : (
+										<div className="space-y-2">
+											<div className="text-[11px] text-slate-500">
+												Add a row per bank and indicate how many savings
+												accounts they have at each.
+											</div>
+											<div className="space-y-2">
+												{savingsRows.map((row, index) => (
+													<div
+														key={index}
+														className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+													>
+														<select
+															value={row.bank}
+															onChange={(e) =>
+																updateSavingsRow(index, "bank", e.target.value)
+															}
+															className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+														>
+															{BANK_OPTIONS.map((opt) => (
+																<option key={opt.value} value={opt.value}>
+																	{opt.label}
+																</option>
+															))}
+														</select>
+														<input
+															type="number"
+															min="0"
+															value={row.count}
+															onChange={(e) =>
+																updateSavingsRow(index, "count", e.target.value)
+															}
+															className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+															placeholder="#"
+														/>
+														{savingsRows.length > 1 && (
+															<button
+																type="button"
+																onClick={() => removeSavingsRow(index)}
+																className="text-[11px] text-red-600 hover:underline"
+															>
+																Remove
+															</button>
+														)}
+													</div>
+												))}
+											</div>
+
+											<button
+												type="button"
+												onClick={addSavingsRow}
+												className="text-[11px] text-yecny-primary hover:underline"
+											>
+												+ Add bank
+											</button>
+										</div>
+									)}
+								</div>
+
+								{/* Credit card accounts */}
+								<div className="border border-slate-100 rounded-md p-3 space-y-3">
+									<div className="flex items-center justify-between">
+										<div className="text-xs font-medium text-yecny-slate">
+											Credit card accounts
+										</div>
+										<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
+											<input
+												type="checkbox"
+												checked={creditMulti}
+												onChange={(e) => setCreditMulti(e.target.checked)}
+												className="h-3 w-3"
+											/>
+											<span>Multiple banks?</span>
+										</label>
+									</div>
+
+									{!creditMulti ? (
+										<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													# of business credit cards
+												</label>
+												<input
+													type="number"
+													name="num_credit_cards"
+													value={form.num_credit_cards}
+													onChange={handleChange}
+													min="0"
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											</div>
+
+											<div className="md:col-span-2">
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Credit card banks
+												</label>
+												<div className="flex flex-col sm:flex-row gap-2">
+													<select
+														name="credit_card_banks"
+														value={form.credit_card_banks}
+														onChange={handleChange}
+														className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+													>
+														{BANK_OPTIONS.map((opt) => (
+															<option key={opt.value} value={opt.value}>
+																{opt.label}
+															</option>
+														))}
+													</select>
+
+													{form.credit_card_banks === "other" && (
+														<input
+															type="text"
+															name="credit_card_banks_other"
+															value={form.credit_card_banks_other}
+															onChange={handleChange}
+															placeholder="Example: AmEx, Chase, Citi"
+															className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+														/>
+													)}
+												</div>
+											</div>
+										</div>
+									) : (
+										<div className="space-y-2">
+											<div className="text-[11px] text-slate-500">
+												Add a row per bank and indicate how many credit cards
+												they have at each.
+											</div>
+											<div className="space-y-2">
+												{creditRows.map((row, index) => (
+													<div
+														key={index}
+														className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
+													>
+														<select
+															value={row.bank}
+															onChange={(e) =>
+																updateCreditRow(index, "bank", e.target.value)
+															}
+															className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+														>
+															{BANK_OPTIONS.map((opt) => (
+																<option key={opt.value} value={opt.value}>
+																	{opt.label}
+																</option>
+															))}
+														</select>
+														<input
+															type="number"
+															min="0"
+															value={row.count}
+															onChange={(e) =>
+																updateCreditRow(index, "count", e.target.value)
+															}
+															className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
+															placeholder="#"
+														/>
+														{creditRows.length > 1 && (
+															<button
+																type="button"
+																onClick={() => removeCreditRow(index)}
+																className="text-[11px] text-red-600 hover:underline"
+															>
+																Remove
+															</button>
+														)}
+													</div>
+												))}
+											</div>
+
+											<button
+												type="button"
+												onClick={addCreditRow}
+												className="text-[11px] text-yecny-primary hover:underline"
+											>
+												+ Add bank
+											</button>
+										</div>
+									)}
+								</div>
+
+								{/* Loans / vehicles / assets */}
+								<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Loans
+										</label>
+										<textarea
+											name="loans"
+											value={form.loans}
+											onChange={handleChange}
+											rows={3}
+											placeholder="Any loans associated with the business."
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Vehicles
+										</label>
+										<textarea
+											name="vehicles"
+											value={form.vehicles}
+											onChange={handleChange}
+											rows={3}
+											placeholder="Business vehicles, leases, etc."
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+									<div>
+										<label className="block text-xs font-medium text-yecny-slate mb-1">
+											Other assets
+										</label>
+										<textarea
+											name="assets"
+											value={form.assets}
+											onChange={handleChange}
+											rows={3}
+											placeholder="Any other significant business assets."
+											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									</div>
+								</div>
+							</div>
+						</section>
+					</>
+				)}
+
+				{/* STEP: Access & systems */}
+				{step.key === "access" && (
+					<>
 						{/* Bank login access */}
-						<div className="flex items-center gap-2 mt-6 md:col-span-3">
+						<div className="flex items-center gap-2">
 							<input
 								id="allow_login_access"
 								type="checkbox"
@@ -1204,854 +1953,547 @@ export default function ClientIntake() {
 								Client will grant us access to bank logins
 							</label>
 						</div>
-					</div>
-				</section>
-				{/* Banking & accounts */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Banking & accounts
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							How many accounts are we tracking, and where are they held?
-						</p>
-					</div>
 
-					<div className="space-y-4">
-						{/* Checking accounts */}
-						<div className="border border-slate-100 rounded-md p-3 space-y-3">
-							<div className="flex items-center justify-between">
-								<div className="text-xs font-medium text-yecny-slate">
-									Checking accounts
-								</div>
-								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
-									<input
-										type="checkbox"
-										checked={checkingMulti}
-										onChange={(e) => setCheckingMulti(e.target.checked)}
-										className="h-3 w-3"
-									/>
-									<span>Multiple banks?</span>
-								</label>
+						{/* Transaction behavior */}
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Transaction behavior &amp; payments
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									How money flows in and out of the business.
+								</p>
 							</div>
 
-							{!checkingMulti ? (
-								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											# of business checking accounts
-										</label>
-										<input
-											type="number"
-											name="num_checking"
-											value={form.num_checking}
-											onChange={handleChange}
-											min="0"
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									</div>
+							<div className="space-y-4">
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										How do they typically get paid?
+									</label>
+									<textarea
+										name="payment_methods"
+										value={form.payment_methods}
+										onChange={handleChange}
+										rows={3}
+										placeholder="ACH, checks, cash deposits, merchant services (Square, Stripe, etc.)"
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									/>
+								</div>
 
-									<div className="md:col-span-2">
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Checking banks
-										</label>
-										<div className="flex flex-col sm:flex-row gap-2">
+								<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+									<label className="flex items-start gap-2 text-xs text-yecny-slate">
+										<input
+											type="checkbox"
+											name="non_business_deposits"
+											checked={form.non_business_deposits}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<div className="flex-1">
+											<div>
+												They sometimes deposit non-business funds into business
+												accounts.
+											</div>
+											{form.non_business_deposits && (
+												<input
+													type="text"
+													name="non_business_deposits_details"
+													value={form.non_business_deposits_details}
+													onChange={handleChange}
+													placeholder="Optional details (how often, typical amounts, etc.)"
+													className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+									</label>
+									<label className="flex items-start gap-2 text-xs text-yecny-slate">
+										<input
+											type="checkbox"
+											name="personal_expenses_in_business"
+											checked={form.personal_expenses_in_business}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<div className="flex-1">
+											<div>
+												They sometimes pay personal expenses from business
+												accounts.
+											</div>
+											{form.personal_expenses_in_business && (
+												<input
+													type="text"
+													name="personal_expenses_in_business_details"
+													value={form.personal_expenses_in_business_details}
+													onChange={handleChange}
+													placeholder="Optional details (card used, how they track, etc.)"
+													className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+									</label>
+
+									<label className="flex items-start gap-2 text-xs text-yecny-slate">
+										<input
+											type="checkbox"
+											name="business_expenses_in_personal"
+											checked={form.business_expenses_in_personal}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<div className="flex-1">
+											<div>
+												They sometimes pay business expenses from personal
+												accounts.
+											</div>
+											{form.business_expenses_in_personal && (
+												<input
+													type="text"
+													name="business_expenses_in_personal_details"
+													value={form.business_expenses_in_personal_details}
+													onChange={handleChange}
+													placeholder="Optional details (which cards/accounts, how often, etc.)"
+													className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												/>
+											)}
+										</div>
+									</label>
+								</div>
+							</div>
+						</section>
+					</>
+				)}
+
+				{/* STEP: Reporting & scope */}
+				{step.key === "scope" && (
+					<>
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Reporting &amp; payroll
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									How often they want reports, how income is tracked, and what
+									payroll services they need.
+								</p>
+							</div>
+
+							<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Report frequency
+									</label>
+
+									<select
+										name="report_frequency"
+										value={form.report_frequency}
+										onChange={handleChange}
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									>
+										{REPORT_FREQ_OPTIONS.map((opt) => (
+											<option key={opt.value} value={opt.value}>
+												{opt.label}
+											</option>
+										))}
+									</select>
+
+									{form.report_frequency === "monthly" && (
+										<div className="mt-2">
+											<label className="block text-xs font-medium text-yecny-slate mb-1">
+												Monthly close tier{" "}
+												<span className="text-red-500">*</span>
+											</label>
 											<select
-												name="checking_banks"
-												value={form.checking_banks}
+												name="monthly_close_tier"
+												value={form.monthly_close_tier}
 												onChange={handleChange}
-												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+												className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
 											>
-												{BANK_OPTIONS.map((opt) => (
+												{MONTHLY_CLOSE_TIER_OPTIONS.map((opt) => (
 													<option key={opt.value} value={opt.value}>
 														{opt.label}
 													</option>
 												))}
 											</select>
-
-											{form.checking_banks === "other" && (
-												<input
-													type="text"
-													name="checking_banks_other"
-													value={form.checking_banks_other}
-													onChange={handleChange}
-													placeholder="Example: Wells Fargo, Chase"
-													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-												/>
-											)}
 										</div>
-										<p className="mt-1 text-[11px] text-slate-500">
-											Use &quot;Other / Add new&quot; if their bank isn&apos;t
-											listed, or switch on &quot;Multiple banks?&quot; to
-											specify counts by bank.
-										</p>
-									</div>
+									)}
 								</div>
-							) : (
-								<div className="space-y-2">
-									<div className="text-[11px] text-slate-500">
-										Add a row per bank and indicate how many checking accounts
-										they have at each.
-									</div>
-									<div className="space-y-2">
-										{checkingRows.map((row, index) => (
-											<div
-												key={index}
-												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
-											>
-												<select
-													value={row.bank}
-													onChange={(e) =>
-														updateCheckingRow(index, "bank", e.target.value)
-													}
-													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-												>
-													{BANK_OPTIONS.map((opt) => (
-														<option key={opt.value} value={opt.value}>
-															{opt.label}
-														</option>
-													))}
-												</select>
-												<input
-													type="number"
-													min="0"
-													value={row.count}
-													onChange={(e) =>
-														updateCheckingRow(index, "count", e.target.value)
-													}
-													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
-													placeholder="#"
-												/>
-												{checkingRows.length > 1 && (
-													<button
-														type="button"
-														onClick={() => removeCheckingRow(index)}
-														className="text-[11px] text-red-600 hover:underline"
-													>
-														Remove
-													</button>
-												)}
-											</div>
-										))}
-									</div>
-
-									<button
-										type="button"
-										onClick={addCheckingRow}
-										className="text-[11px] text-yecny-primary hover:underline"
-									>
-										+ Add bank
-									</button>
-								</div>
-							)}
-						</div>
-						{/* Savings accounts */}
-						<div className="border border-slate-100 rounded-md p-3 space-y-3">
-							<div className="flex items-center justify-between">
-								<div className="text-xs font-medium text-yecny-slate">
-									Savings accounts
-								</div>
-								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
-									<input
-										type="checkbox"
-										checked={savingsMulti}
-										onChange={(e) => setSavingsMulti(e.target.checked)}
-										className="h-3 w-3"
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										How should income be tracked?
+									</label>
+									<textarea
+										name="income_tracking"
+										value={form.income_tracking}
+										onChange={handleChange}
+										rows={3}
+										placeholder="Ex: Consulting income, product income, management income..."
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 									/>
-									<span>Multiple banks?</span>
-								</label>
+								</div>
+
+								<div>
+									<label className="block text-xs font-medium text-yecny-slate mb-1">
+										Payroll provider
+									</label>
+									<select
+										name="payroll_provider"
+										value={form.payroll_provider}
+										onChange={handleChange}
+										className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+									>
+										{PAYROLL_PROVIDER_OPTIONS.map((opt) => (
+											<option key={opt.value} value={opt.value}>
+												{opt.label}
+											</option>
+										))}
+									</select>
+
+									{form.payroll_provider === "other" && (
+										<input
+											type="text"
+											name="payroll_provider_other"
+											value={form.payroll_provider_other}
+											onChange={handleChange}
+											placeholder="Add a different payroll provider"
+											className="mt-2 w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										/>
+									)}
+								</div>
 							</div>
 
-							{!savingsMulti ? (
-								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											# of business savings accounts
-										</label>
-										<input
-											type="number"
-											name="num_savings"
-											value={form.num_savings}
-											onChange={handleChange}
-											min="0"
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									</div>
-									<div className="md:col-span-2">
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Savings banks
-										</label>
-										<div className="flex flex-col sm:flex-row gap-2">
-											<select
-												name="savings_banks"
-												value={form.savings_banks}
-												onChange={handleChange}
-												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-											>
-												{BANK_OPTIONS.map((opt) => (
-													<option key={opt.value} value={opt.value}>
-														{opt.label}
-													</option>
-												))}
-											</select>
-
-											{form.savings_banks === "other" && (
-												<input
-													type="text"
-													name="savings_banks_other"
-													value={form.savings_banks_other}
-													onChange={handleChange}
-													placeholder="Banks where savings accounts are held"
-													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-												/>
-											)}
-										</div>
-									</div>
+							{/* Payroll services checklist */}
+							<div className="mt-3 border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60">
+								<div className="text-xs font-medium text-yecny-charcoal mb-2">
+									Payroll services requested
 								</div>
-							) : (
-								<div className="space-y-2">
-									<div className="text-[11px] text-slate-500">
-										Add a row per bank and indicate how many savings accounts
-										they have at each.
-									</div>
-									<div className="space-y-2">
-										{savingsRows.map((row, index) => (
-											<div
-												key={index}
-												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
-											>
-												<select
-													value={row.bank}
+								<div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-yecny-slate">
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_needs_setup"
+											checked={form.payroll_needs_setup}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Initial payroll setup</span>
+									</label>
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_process_regular"
+											checked={form.payroll_process_regular}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Process regular payroll</span>
+									</label>
+
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_corrections_adjustments"
+											checked={form.payroll_corrections_adjustments}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Make payroll corrections / adjustments</span>
+									</label>
+
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_quarterly_filings"
+											checked={form.payroll_quarterly_filings}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Prepare quarterly payroll tax filings</span>
+									</label>
+
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_state_local_payments"
+											checked={form.payroll_state_local_payments}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Make all state &amp; local payroll tax payments</span>
+									</label>
+
+									<label className="inline-flex items-start gap-2">
+										<input
+											type="checkbox"
+											name="payroll_calculate_hours_commission"
+											checked={form.payroll_calculate_hours_commission}
+											onChange={handleChange}
+											className="mt-0.5 h-4 w-4 border-slate-300 rounded"
+										/>
+										<span>Calculate hours / commission per payroll</span>
+									</label>
+								</div>
+							</div>
+						</section>
+					</>
+				)}
+
+				{/* STEP: Recurring & notes */}
+				{step.key === "wrap" && (
+					<>
+						{/* Custom recurring rules */}
+						<section className="space-y-4">
+							<div>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Custom recurring tasks
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									Add any client-specific recurring work that should start after
+									onboarding.
+								</p>
+							</div>
+							<div className="space-y-3">
+								{(form.custom_recurring_rules || []).map((r, idx) => (
+									<div
+										key={idx}
+										className="border border-slate-200 rounded-lg p-3 bg-slate-50/40 space-y-2"
+									>
+										<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+											<div className="md:col-span-1">
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Task name
+												</label>
+												<input
+													value={r.title || ""}
 													onChange={(e) =>
-														updateSavingsRow(index, "bank", e.target.value)
+														updateCustomRecurringRule(
+															idx,
+															"title",
+															e.target.value
+														)
 													}
-													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+													placeholder="Example: Send sales tax summary"
+												/>
+											</div>
+
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Schedule
+												</label>
+												<select
+													value={r.schedule_type || "monthly"}
+													onChange={(e) =>
+														updateCustomRecurringRule(
+															idx,
+															"schedule_type",
+															e.target.value
+														)
+													}
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
 												>
-													{BANK_OPTIONS.map((opt) => (
-														<option key={opt.value} value={opt.value}>
-															{opt.label}
+													<option value="monthly">Monthly</option>
+													<option value="quarterly">Quarterly</option>
+													<option value="annual">Annual</option>
+												</select>
+											</div>
+
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Day of month
+												</label>
+												<input
+													type="number"
+													min="1"
+													max="31"
+													value={r.day_of_month ?? 25}
+													onChange={(e) =>
+														updateCustomRecurringRule(
+															idx,
+															"day_of_month",
+															Number(e.target.value || 25)
+														)
+													}
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												/>
+											</div>
+											<div className="md:col-span-2">
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Description (optional)
+												</label>
+												<input
+													value={r.description || ""}
+													onChange={(e) =>
+														updateCustomRecurringRule(
+															idx,
+															"description",
+															e.target.value
+														)
+													}
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+													placeholder="Notes for the assigned person"
+												/>
+											</div>
+
+											<div>
+												<label className="block text-xs font-medium text-yecny-slate mb-1">
+													Assign to
+												</label>
+												<select
+													value={r.assigned_user_id || ""}
+													onChange={(e) =>
+														updateCustomRecurringRule(
+															idx,
+															"assigned_user_id",
+															e.target.value ? Number(e.target.value) : ""
+														)
+													}
+													className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+												>
+													<option value="">Unassigned</option>
+													{users.map((u) => (
+														<option key={u.id} value={u.id}>
+															{u.name} ({u.role})
 														</option>
 													))}
 												</select>
-												<input
-													type="number"
-													min="0"
-													value={row.count}
-													onChange={(e) =>
-														updateSavingsRow(index, "count", e.target.value)
-													}
-													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
-													placeholder="#"
-												/>
-												{savingsRows.length > 1 && (
-													<button
-														type="button"
-														onClick={() => removeSavingsRow(index)}
-														className="text-[11px] text-red-600 hover:underline"
-													>
-														Remove
-													</button>
-												)}
 											</div>
-										))}
-									</div>
+										</div>
 
-									<button
-										type="button"
-										onClick={addSavingsRow}
-										className="text-[11px] text-yecny-primary hover:underline"
-									>
-										+ Add bank
-									</button>
-								</div>
-							)}
-						</div>
-
-						{/* Credit card accounts */}
-						<div className="border border-slate-100 rounded-md p-3 space-y-3">
-							<div className="flex items-center justify-between">
-								<div className="text-xs font-medium text-yecny-slate">
-									Credit card accounts
-								</div>
-								<label className="flex items-center gap-1 text-[11px] text-yecny-slate">
-									<input
-										type="checkbox"
-										checked={creditMulti}
-										onChange={(e) => setCreditMulti(e.target.checked)}
-										className="h-3 w-3"
-									/>
-									<span>Multiple banks?</span>
-								</label>
-							</div>
-							{!creditMulti ? (
-								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											# of business credit cards
-										</label>
-										<input
-											type="number"
-											name="num_credit_cards"
-											value={form.num_credit_cards}
-											onChange={handleChange}
-											min="0"
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									</div>
-									<div className="md:col-span-2">
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Credit card banks
-										</label>
-										<div className="flex flex-col sm:flex-row gap-2">
-											<select
-												name="credit_card_banks"
-												value={form.credit_card_banks}
-												onChange={handleChange}
-												className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
+										<div className="flex justify-end">
+											<button
+												type="button"
+												onClick={() => removeCustomRecurringRule(idx)}
+												className="text-[11px] text-red-600 hover:underline"
 											>
-												{BANK_OPTIONS.map((opt) => (
-													<option key={opt.value} value={opt.value}>
-														{opt.label}
-													</option>
-												))}
-											</select>
-
-											{form.credit_card_banks === "other" && (
-												<input
-													type="text"
-													name="credit_card_banks_other"
-													value={form.credit_card_banks_other}
-													onChange={handleChange}
-													placeholder="Example: AmEx, Chase, Citi"
-													className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-												/>
-											)}
+												Remove
+											</button>
 										</div>
 									</div>
-								</div>
-							) : (
-								<div className="space-y-2">
-									<div className="text-[11px] text-slate-500">
-										Add a row per bank and indicate how many credit cards they
-										have at each.
-									</div>
-									<div className="space-y-2">
-										{creditRows.map((row, index) => (
-											<div
-												key={index}
-												className="flex flex-col sm:flex-row gap-2 items-start sm:items-center"
-											>
-												<select
-													value={row.bank}
-													onChange={(e) =>
-														updateCreditRow(index, "bank", e.target.value)
-													}
-													className="sm:w-56 border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-												>
-													{BANK_OPTIONS.map((opt) => (
-														<option key={opt.value} value={opt.value}>
-															{opt.label}
-														</option>
-													))}
-												</select>
-												<input
-													type="number"
-													min="0"
-													value={row.count}
-													onChange={(e) =>
-														updateCreditRow(index, "count", e.target.value)
-													}
-													className="w-24 border border-slate-300 rounded-md px-3 py-2 text-sm"
-													placeholder="#"
-												/>
-												{creditRows.length > 1 && (
-													<button
-														type="button"
-														onClick={() => removeCreditRow(index)}
-														className="text-[11px] text-red-600 hover:underline"
-													>
-														Remove
-													</button>
-												)}
-											</div>
-										))}
-									</div>
+								))}
 
-									<button
-										type="button"
-										onClick={addCreditRow}
-										className="text-[11px] text-yecny-primary hover:underline"
-									>
-										+ Add bank
-									</button>
-								</div>
-							)}
-						</div>
-
-						{/* Loans / vehicles / assets */}
-						<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Loans
-								</label>
-								<textarea
-									name="loans"
-									value={form.loans}
-									onChange={handleChange}
-									rows={3}
-									placeholder="Any loans associated with the business."
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
+								<button
+									type="button"
+									onClick={addCustomRecurringRule}
+									className="text-[11px] text-yecny-primary hover:underline"
+								>
+									+ Add recurring task
+								</button>
 							</div>
+						</section>
+						{/* Additional notes */}
+						<section className="space-y-4">
 							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Vehicles
-								</label>
-								<textarea
-									name="vehicles"
-									value={form.vehicles}
-									onChange={handleChange}
-									rows={3}
-									placeholder="Business vehicles, leases, etc."
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
+								<h2 className="text-sm font-semibold text-yecny-charcoal">
+									Additional notes
+								</h2>
+								<p className="text-xs text-yecny-slate mt-1">
+									Any extra context that will help with onboarding or ongoing
+									work.
+								</p>
 							</div>
 
-							<div>
-								<label className="block text-xs font-medium text-yecny-slate mb-1">
-									Other assets
-								</label>
-								<textarea
-									name="assets"
-									value={form.assets}
-									onChange={handleChange}
-									rows={3}
-									placeholder="Any other significant business assets."
-									className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
-							</div>
-						</div>
-					</div>
-				</section>
-
-				{/* Transaction behavior */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Transaction behavior & payments
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							How money flows in and out of the business.
-						</p>
-					</div>
-
-					<div className="space-y-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								How do they typically get paid?
-							</label>
 							<textarea
-								name="payment_methods"
-								value={form.payment_methods}
+								name="additional_notes"
+								value={form.additional_notes}
 								onChange={handleChange}
-								rows={3}
-								placeholder="ACH, checks, cash deposits, merchant services (Square, Stripe, etc.)"
+								rows={5}
+								placeholder="Anything else we should know?"
 								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
 							/>
-						</div>
-						<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-							<label className="flex items-start gap-2 text-xs text-yecny-slate">
-								<input
-									type="checkbox"
-									name="non_business_deposits"
-									checked={form.non_business_deposits}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<div className="flex-1">
-									<div>
-										They sometimes deposit non-business funds into business
-										accounts.
-									</div>
-									{form.non_business_deposits && (
-										<input
-											type="text"
-											name="non_business_deposits_details"
-											value={form.non_business_deposits_details}
-											onChange={handleChange}
-											placeholder="Optional details (how often, typical amounts, etc.)"
-											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									)}
-								</div>
-							</label>
-							<label className="flex items-start gap-2 text-xs text-yecny-slate">
-								<input
-									type="checkbox"
-									name="personal_expenses_in_business"
-									checked={form.personal_expenses_in_business}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<div className="flex-1">
-									<div>
-										They sometimes pay personal expenses from business accounts.
-									</div>
-									{form.personal_expenses_in_business && (
-										<input
-											type="text"
-											name="personal_expenses_in_business_details"
-											value={form.personal_expenses_in_business_details}
-											onChange={handleChange}
-											placeholder="Optional details (card used, how they track, etc.)"
-											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									)}
-								</div>
-							</label>
+						</section>
+					</>
+				)}
 
-							<label className="flex items-start gap-2 text-xs text-yecny-slate">
-								<input
-									type="checkbox"
-									name="business_expenses_in_personal"
-									checked={form.business_expenses_in_personal}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<div className="flex-1">
-									<div>
-										They sometimes pay business expenses from personal accounts.
-									</div>
-									{form.business_expenses_in_personal && (
-										<input
-											type="text"
-											name="business_expenses_in_personal_details"
-											value={form.business_expenses_in_personal_details}
-											onChange={handleChange}
-											placeholder="Optional details (which cards/accounts, how often, etc.)"
-											className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-										/>
-									)}
-								</div>
-							</label>
-						</div>
-					</div>
-				</section>
-
-				{/* Reporting & payroll */}
-				<section className="space-y-4">
-					<div>
+				{/* STEP: Review */}
+				{step.key === "review" && (
+					<section className="space-y-3">
 						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Reporting & payroll
+							Review
 						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							How often they want reports, how income is tracked, and what
-							payroll services they need.
-						</p>
-					</div>
-					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Report frequency
-							</label>
-							<select
-								name="report_frequency"
-								value={form.report_frequency}
-								onChange={handleChange}
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							>
-								{REPORT_FREQ_OPTIONS.map((opt) => (
-									<option key={opt.value} value={opt.value}>
-										{opt.label}
-									</option>
-								))}
-							</select>
-						</div>
 
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								How should income be tracked?
-							</label>
-							<textarea
-								name="income_tracking"
-								value={form.income_tracking}
-								onChange={handleChange}
-								rows={3}
-								placeholder="Ex: Consulting income, product income, management income..."
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							/>
-						</div>
-
-						<div>
-							<label className="block text-xs font-medium text-yecny-slate mb-1">
-								Payroll provider
-							</label>
-							<select
-								name="payroll_provider"
-								value={form.payroll_provider}
-								onChange={handleChange}
-								className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-							>
-								{PAYROLL_PROVIDER_OPTIONS.map((opt) => (
-									<option key={opt.value} value={opt.value}>
-										{opt.label}
-									</option>
-								))}
-							</select>
-
-							{form.payroll_provider === "other" && (
-								<input
-									type="text"
-									name="payroll_provider_other"
-									value={form.payroll_provider_other}
-									onChange={handleChange}
-									placeholder="Add a different payroll provider"
-									className="mt-2 w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-								/>
-							)}
-						</div>
-					</div>
-					{/* Payroll services checklist */}
-					<div className="mt-3 border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60">
-						<div className="text-xs font-medium text-yecny-charcoal mb-2">
-							Payroll services requested
-						</div>
-						<div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-yecny-slate">
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_needs_setup"
-									checked={form.payroll_needs_setup}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Initial payroll setup</span>
-							</label>
-
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_process_regular"
-									checked={form.payroll_process_regular}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Process regular payroll</span>
-							</label>
-
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_corrections_adjustments"
-									checked={form.payroll_corrections_adjustments}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Make payroll corrections / adjustments</span>
-							</label>
-
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_quarterly_filings"
-									checked={form.payroll_quarterly_filings}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Prepare quarterly payroll tax filings</span>
-							</label>
-
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_state_local_payments"
-									checked={form.payroll_state_local_payments}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Make all state &amp; local payroll tax payments</span>
-							</label>
-
-							<label className="inline-flex items-start gap-2">
-								<input
-									type="checkbox"
-									name="payroll_calculate_hours_commission"
-									checked={form.payroll_calculate_hours_commission}
-									onChange={handleChange}
-									className="mt-0.5 h-4 w-4 border-slate-300 rounded"
-								/>
-								<span>Calculate hours / commission per payroll</span>
-							</label>
-						</div>
-					</div>
-				</section>
-				{/* Custom recurring rules */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Custom recurring tasks
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							Add any client-specific recurring work that should start after
-							onboarding.
-						</p>
-					</div>
-
-					<div className="space-y-3">
-						{(form.custom_recurring_rules || []).map((r, idx) => (
-							<div
-								key={idx}
-								className="border border-slate-200 rounded-lg p-3 bg-slate-50/40 space-y-2"
-							>
-								<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-									<div className="md:col-span-1">
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Task name
-										</label>
-										<input
-											value={r.title || ""}
-											onChange={(e) =>
-												updateCustomRecurringRule(idx, "title", e.target.value)
-											}
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-											placeholder="Example: Send sales tax summary"
-										/>
-									</div>
-
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Schedule
-										</label>
-										<select
-											value={r.schedule_type || "monthly"}
-											onChange={(e) =>
-												updateCustomRecurringRule(
-													idx,
-													"schedule_type",
-													e.target.value
-												)
-											}
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-										>
-											<option value="monthly">Monthly</option>
-											<option value="quarterly">Quarterly</option>
-											<option value="annual">Annual</option>
-										</select>
-									</div>
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Day of month
-										</label>
-										<input
-											type="number"
-											min="1"
-											max="31"
-											value={r.day_of_month ?? 25}
-											onChange={(e) =>
-												updateCustomRecurringRule(
-													idx,
-													"day_of_month",
-													Number(e.target.value || 25)
-												)
-											}
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-										/>
-									</div>
-
-									<div className="md:col-span-2">
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Description (optional)
-										</label>
-										<input
-											value={r.description || ""}
-											onChange={(e) =>
-												updateCustomRecurringRule(
-													idx,
-													"description",
-													e.target.value
-												)
-											}
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-											placeholder="Notes for the assigned person"
-										/>
-									</div>
-
-									<div>
-										<label className="block text-xs font-medium text-yecny-slate mb-1">
-											Assign to
-										</label>
-										<select
-											value={r.assigned_user_id || ""}
-											onChange={(e) =>
-												updateCustomRecurringRule(
-													idx,
-													"assigned_user_id",
-													e.target.value ? Number(e.target.value) : ""
-												)
-											}
-											className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
-										>
-											<option value="">Unassigned</option>
-											{users.map((u) => (
-												<option key={u.id} value={u.id}>
-													{u.name} ({u.role})
-												</option>
-											))}
-										</select>
-									</div>
-								</div>
-
-								<div className="flex justify-end">
-									<button
-										type="button"
-										onClick={() => removeCustomRecurringRule(idx)}
-										className="text-[11px] text-red-600 hover:underline"
-									>
-										Remove
-									</button>
-								</div>
+						<div className="border border-slate-200 rounded-lg p-4 text-xs space-y-2">
+							<div>
+								<span className="font-medium">Legal name:</span>{" "}
+								{form.legal_name || "-"}
 							</div>
-						))}{" "}
-						<button
-							type="button"
-							onClick={addCustomRecurringRule}
-							className="text-[11px] text-yecny-primary hover:underline"
-						>
-							+ Add recurring task
-						</button>
-					</div>
-				</section>
-
-				{/* Additional notes */}
-				<section className="space-y-4">
-					<div>
-						<h2 className="text-sm font-semibold text-yecny-charcoal">
-							Additional notes
-						</h2>
-						<p className="text-xs text-yecny-slate mt-1">
-							Any extra context that will help with onboarding or ongoing work.
+							<div>
+								<span className="font-medium">Primary contact:</span>{" "}
+								{form.primary_contact_name || "-"}
+							</div>
+							<div>
+								<span className="font-medium">Start date:</span>{" "}
+								{form.bookkeeping_start_date || "-"}
+							</div>
+							<div>
+								<span className="font-medium">QBO status:</span>{" "}
+								{form.qbo_status || "-"}
+							</div>
+							{form.qbo_status === "no" && (
+								<div>
+									<span className="font-medium">QBO recommended:</span>{" "}
+									{computeQboRecommendation(form) || "-"}
+								</div>
+							)}
+							<div>
+								<span className="font-medium">Report frequency:</span>{" "}
+								{form.report_frequency || "-"}
+							</div>
+							{form.report_frequency === "monthly" && (
+								<div>
+									<span className="font-medium">Monthly close tier:</span>{" "}
+									{form.monthly_close_tier || "-"}
+								</div>
+							)}
+							<div>
+								<span className="font-medium">Custom recurring rules:</span>{" "}
+								{(form.custom_recurring_rules || []).length}
+							</div>
+							<div>
+								<span className="font-medium">Manager / Bookkeeper:</span>{" "}
+								{form.manager_id && form.bookkeeper_id
+									? "Assigned"
+									: "Not assigned"}
+							</div>
+						</div>
+						<p className="text-[11px] text-slate-500">
+							To convert, you must assign Manager and Bookkeeper (Starting point
+							step).
 						</p>
-					</div>
-
-					<textarea
-						name="additional_notes"
-						value={form.additional_notes}
-						onChange={handleChange}
-						rows={5}
-						placeholder="Anything else we should know?"
-						className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-yecny-primary-soft focus:border-yecny-primary"
-					/>
-				</section>
+					</section>
+				)}
 
 				{/* Actions */}
 				<div className="pt-4 border-t border-slate-200 flex justify-between items-center gap-3">
-					<button
-						type="button"
-						onClick={handleBackToList}
-						className="text-xs text-yecny-slate hover:text-yecny-charcoal"
-					>
-						Back to Intake List
-					</button>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={handleBackToList}
+							className="text-xs text-yecny-slate hover:text-yecny-charcoal"
+						>
+							Back to Intake List
+						</button>
+
+						<span className="text-slate-300">|</span>
+
+						<button
+							type="button"
+							onClick={goBack}
+							disabled={stepIdx === 0}
+							className="px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-yecny-slate hover:bg-slate-50 disabled:opacity-50"
+						>
+							Back
+						</button>
+
+						<button
+							type="button"
+							onClick={handleNextStep}
+							disabled={stepIdx >= STEPS.length - 1}
+							className="px-3 py-2 rounded-md bg-slate-900 text-white text-sm hover:bg-slate-800 disabled:opacity-50"
+						>
+							Next
+						</button>
+					</div>
+
 					<div className="flex gap-2">
 						<button
 							type="button"
@@ -2060,6 +2502,7 @@ export default function ClientIntake() {
 						>
 							Clear form
 						</button>
+
 						<button
 							type="button"
 							onClick={handleSaveAndExit}
@@ -2068,14 +2511,16 @@ export default function ClientIntake() {
 						>
 							{saving ? "Saving..." : "Save & exit"}
 						</button>
-						<button
-							type="button"
-							onClick={handleSaveAndConvert}
-							disabled={saving}
-							className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
-						>
-							{saving ? "Converting..." : "Save & convert to client"}
-						</button>
+						{step.key === "review" && (
+							<button
+								type="button"
+								onClick={handleSaveAndConvert}
+								disabled={saving}
+								className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+							>
+								{saving ? "Converting..." : "Save & convert to client"}
+							</button>
+						)}
 
 						<button
 							type="submit"

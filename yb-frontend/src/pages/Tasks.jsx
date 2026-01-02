@@ -228,7 +228,7 @@ export default function Tasks() {
 				</div>
 			)}
 
-			{/* New task row */}
+			{/* New task row
 			<section className="rounded-xl border border-slate-200 bg-white/70 px-4 py-3 space-y-2">
 				<div className="text-[11px] uppercase tracking-[0.18em] text-yecny-slate mb-1">
 					New task
@@ -270,7 +270,7 @@ export default function Tasks() {
 						{adding ? "Adding..." : "Add Task"}
 					</button>
 				</div>
-			</section>
+			</section> */}
 
 			{/* Filters */}
 			<section className="rounded-xl border border-slate-200 bg-white/70 px-4 py-3 space-y-2">

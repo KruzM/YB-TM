@@ -1,5 +1,5 @@
 // src/pages/ClientDetail.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
@@ -358,15 +358,130 @@ function ProfileTab({
 		</div>
 	);
 }
+
+// ---- Type metadata: label + group + required docs ----
+const DOC_LABEL = {
+	S: "Statement",
+	O: "Owner",
+	BS: "Bill of Sale",
+};
+
+const TYPE_META = {
+	// Assets
+	checking: { label: "Checking Account", group: "Assets", docs: ["S"] },
+	savings: { label: "Savings Account", group: "Assets", docs: ["S"] },
+	investment: { label: "Investment Account", group: "Assets", docs: ["S"] },
+	loan_to_others: { label: "Loan to Others", group: "Assets", docs: ["O"] },
+	loan_to_shareholders: {
+		label: "Loan to Shareholders",
+		group: "Assets",
+		docs: ["O"],
+	},
+	vehicle: { label: "Vehicle", group: "Assets", docs: ["BS"] },
+	equipment: { label: "Equipment", group: "Assets", docs: ["O", "BS"] },
+	other_asset: { label: "Other Asset", group: "Assets", docs: ["O", "BS"] },
+
+	// Liabilities
+	credit_card: { label: "Credit Card", group: "Liabilities", docs: ["S"] },
+	line_of_credit: {
+		label: "Line of Credit (LOC)",
+		group: "Liabilities",
+		docs: ["S"],
+	},
+	payroll_liability: {
+		label: "Payroll Liabilities",
+		group: "Liabilities",
+		docs: ["O"],
+	},
+	vehicle_loan: { label: "Vehicle Loan", group: "Liabilities", docs: ["S"] },
+	loan_from_shareholders: {
+		label: "Loan from Shareholders",
+		group: "Liabilities",
+		docs: ["O"],
+	},
+	loan_from_others: {
+		label: "Loan from Others",
+		group: "Liabilities",
+		docs: ["O", "S"],
+	},
+	mortgage: { label: "Mortgage", group: "Liabilities", docs: ["S"] },
+
+	// Equity
+	owner_contributions: {
+		label: "Owner Contributions",
+		group: "Equity",
+		docs: ["O"],
+	},
+	owner_distributions: {
+		label: "Owner Distributions",
+		group: "Equity",
+		docs: ["O"],
+	},
+};
+
+const GROUP_ORDER = ["Assets", "Liabilities", "Equity", "Other"];
+
+// Options for the dropdown
 const ACCOUNT_TYPES = [
-	{ value: "checking", label: "Checking" },
-	{ value: "savings", label: "Savings" },
-	{ value: "credit_card", label: "Credit Card" },
-	{ value: "loan", label: "Loan" },
-	{ value: "line_of_credit", label: "Line of Credit" },
-	{ value: "asset", label: "Asset" },
-	{ value: "other", label: "Other" },
+	// Assets
+	{ value: "checking", label: TYPE_META.checking.label },
+	{ value: "savings", label: TYPE_META.savings.label },
+	{ value: "investment", label: TYPE_META.investment.label },
+	{ value: "loan_to_others", label: TYPE_META.loan_to_others.label },
+	{
+		value: "loan_to_shareholders",
+		label: TYPE_META.loan_to_shareholders.label,
+	},
+	{ value: "vehicle", label: TYPE_META.vehicle.label },
+	{ value: "equipment", label: TYPE_META.equipment.label },
+	{ value: "other_asset", label: TYPE_META.other_asset.label },
+
+	// Liabilities
+	{ value: "credit_card", label: TYPE_META.credit_card.label },
+	{ value: "line_of_credit", label: TYPE_META.line_of_credit.label },
+	{ value: "payroll_liability", label: TYPE_META.payroll_liability.label },
+	{ value: "vehicle_loan", label: TYPE_META.vehicle_loan.label },
+	{
+		value: "loan_from_shareholders",
+		label: TYPE_META.loan_from_shareholders.label,
+	},
+	{ value: "loan_from_others", label: TYPE_META.loan_from_others.label },
+	{ value: "mortgage", label: TYPE_META.mortgage.label },
+
+	// Equity
+	{ value: "owner_contributions", label: TYPE_META.owner_contributions.label },
+	{ value: "owner_distributions", label: TYPE_META.owner_distributions.label },
 ];
+function getTypeLabel(type) {
+	return TYPE_META[type]?.label || type || "-";
+}
+
+function getGroup(type) {
+	return TYPE_META[type]?.group || "Other";
+}
+
+function getDocs(type) {
+	return TYPE_META[type]?.docs || [];
+}
+
+function DocsChips({ docs }) {
+	if (!docs || docs.length === 0)
+		return <span className="text-xs text-slate-400">-</span>;
+
+	return (
+		<div className="flex flex-wrap gap-1">
+			{docs.map((d) => (
+				<span
+					key={d}
+					className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-slate-200 text-yecny-charcoal"
+					title={DOC_LABEL[d] || d}
+				>
+					{DOC_LABEL[d] || d}
+				</span>
+			))}
+		</div>
+	);
+}
 
 function AccountsTab({ clientId }) {
 	const [accounts, setAccounts] = useState([]);
@@ -378,12 +493,13 @@ function AccountsTab({ clientId }) {
 	const [saving, setSaving] = useState(false);
 	const [form, setForm] = useState(emptyAccountForm());
 
-	function emptyAccountForm() {
+	function emptyAccountForm(overrides = {}) {
 		return {
 			name: "",
 			type: "checking",
 			last4: "",
 			is_active: true,
+			...overrides,
 		};
 	}
 
@@ -395,7 +511,7 @@ function AccountsTab({ clientId }) {
 			const res = await api.get("/accounts", {
 				params: { client_id: clientId },
 			});
-			setAccounts(res.data);
+			setAccounts(res.data || []);
 		} catch (err) {
 			console.error(err);
 			setError("Failed to load accounts");
@@ -403,24 +519,53 @@ function AccountsTab({ clientId }) {
 			setLoading(false);
 		}
 	};
-
 	useEffect(() => {
 		loadAccounts();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [clientId]);
+
+	const grouped = useMemo(() => {
+		const buckets = {};
+		for (const a of accounts || []) {
+			const g = getGroup(a.type);
+			if (!buckets[g]) buckets[g] = [];
+			buckets[g].push(a);
+		}
+
+		// stable-ish ordering inside groups
+		for (const g of Object.keys(buckets)) {
+			buckets[g].sort((a, b) => {
+				const ta = getTypeLabel(a.type).toLowerCase();
+				const tb = getTypeLabel(b.type).toLowerCase();
+				if (ta !== tb) return ta.localeCompare(tb);
+				return (a.name || "")
+					.toLowerCase()
+					.localeCompare((b.name || "").toLowerCase());
+			});
+		}
+
+		return buckets;
+	}, [accounts]);
 
 	const openCreateModal = () => {
 		setEditing(null);
 		setForm(emptyAccountForm());
 		setModalOpen(true);
 	};
+
+	const openCreateModalWithType = (type) => {
+		setEditing(null);
+		setForm(emptyAccountForm({ type: type || "checking" }));
+		setModalOpen(true);
+	};
+
 	const openEditModal = (account) => {
 		setEditing(account);
 		setForm({
 			name: account.name ?? "",
 			type: account.type ?? "checking",
 			last4: account.last4 ?? "",
-			is_active: account.is_active,
+			is_active: !!account.is_active,
 		});
 		setModalOpen(true);
 	};
@@ -485,126 +630,205 @@ function AccountsTab({ clientId }) {
 		}
 	};
 
+	const handleSeedDefaults = async () => {
+		try {
+			await api.post(`/accounts/seed-defaults/${clientId}`);
+			await loadAccounts();
+		} catch (e) {
+			console.error(e);
+			setError("Failed to seed default accounts");
+		}
+	};
+	const totalCount = accounts.length;
+
 	return (
 		<div className="space-y-4">
 			{/* Header */}
-			<div className="flex items-center justify-between gap-3">
-				<div className="text-sm text-yecny-slate">
-					Linked bank, credit card, loan, and asset accounts for this client.
-				</div>
-				<button
-					onClick={openCreateModal}
-					className="px-3 py-1.5 rounded-md bg-yecny-primary text-white text-sm font-medium hover:bg-yecny-primary-dark"
-				>
-					+ Add Account
-				</button>
-			</div>
 
-			{/* List */}
-			<div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-				<div className="px-4 py-2 border-b border-slate-200 text-xs text-yecny-slate flex justify-between">
-					<span>
-						{loading
-							? "Loading accounts..."
-							: `${accounts.length} account${accounts.length === 1 ? "" : "s"}`}
-					</span>
+			<div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+				<div className="space-y-1">
+					<div className="text-sm text-yecny-slate">
+						Linked bank, credit card, loan, and asset accounts for this client.
+					</div>
+					<div className="text-[11px] text-slate-500">
+						Required docs: <span className="font-medium">Statement</span> (S),{" "}
+						<span className="font-medium">Owner</span> (O),{" "}
+						<span className="font-medium">Bill of Sale</span> (BS)
+					</div>
+					<button
+						onClick={handleSeedDefaults}
+						className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-xs text-yecny-slate hover:bg-slate-50"
+					>
+						Seed onboarding accounts
+					</button>
 				</div>
 
-				{error && (
-					<div className="px-4 py-2 text-sm text-red-700 bg-red-50 border-b border-red-100">
-						{error}
-					</div>
-				)}
-
-				{!loading && accounts.length === 0 && !error && (
-					<div className="px-4 py-6 text-sm text-yecny-slate">
-						No accounts yet. Use &quot;Add Account&quot; to link this
-						client&apos;s bank, credit card, loan, or asset accounts.
-					</div>
-				)}
-				{!loading && accounts.length > 0 && (
-					<div className="overflow-x-auto">
-						<table className="min-w-full text-sm">
-							<thead className="bg-slate-50">
-								<tr>
-									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
-										Name
-									</th>
-									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
-										Type
-									</th>
-									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
-										Last 4
-									</th>
-									<th className="text-left px-4 py-2 font-medium text-yecny-slate">
-										Active
-									</th>
-									<th className="text-right px-4 py-2 font-medium text-yecny-slate">
-										Actions
-									</th>
-								</tr>
-							</thead>
-							<tbody>
-								{accounts.map((account, idx) => {
-									const isLast = idx === accounts.length - 1;
-									const typeLabel =
-										ACCOUNT_TYPES.find((t) => t.value === account.type)
-											?.label ||
-										account.type ||
-										"-";
-
-									return (
-										<tr
-											key={account.id}
-											className={
-												"hover:bg-slate-50 transition-colors" +
-												(isLast ? "" : " border-b border-slate-100")
-											}
-										>
-											<td className="px-4 py-2">
-												<div className="font-medium text-yecny-charcoal">
-													{account.name}
-												</div>
-											</td>
-											<td className="px-4 py-2">{typeLabel}</td>
-											<td className="px-4 py-2">
-												{account.last4 || (
-													<span className="text-xs text-slate-400">-</span>
-												)}
-											</td>
-											<td className="px-4 py-2">
-												{account.is_active ? (
-													<span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
-														Active
-													</span>
-												) : (
-													<span className="text-xs px-2 py-0.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200">
-														Inactive
-													</span>
-												)}
-											</td>
-											<td className="px-4 py-2 text-right">
-												<button
-													onClick={() => openEditModal(account)}
-													className="text-xs text-yecny-primary hover:underline mr-3"
-												>
-													Edit
-												</button>
-												<button
-													onClick={() => handleDelete(account)}
-													className="text-xs text-red-600 hover:underline"
-												>
-													Delete
-												</button>
-											</td>
-										</tr>
-									);
-								})}
-							</tbody>
-						</table>
-					</div>
-				)}
+				<div className="flex gap-2">
+					<button
+						onClick={() => openCreateModalWithType("checking")}
+						className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-xs text-yecny-slate hover:bg-slate-50"
+					>
+						+ Checking
+					</button>
+					<button
+						onClick={() => openCreateModalWithType("credit_card")}
+						className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-xs text-yecny-slate hover:bg-slate-50"
+					>
+						+ Credit Card
+					</button>
+					<button
+						onClick={openCreateModal}
+						className="px-3 py-1.5 rounded-md bg-yecny-primary text-white text-sm font-medium hover:bg-yecny-primary-dark"
+					>
+						+ Add Account
+					</button>
+				</div>
 			</div>
+
+			{/* Alerts */}
+			{error && (
+				<div className="px-4 py-2 text-sm text-red-700 bg-red-50 border border-red-100 rounded-md">
+					{error}
+				</div>
+			)}
+			{/* Empty */}
+			{!loading && totalCount === 0 && !error && (
+				<div className="bg-white rounded-xl shadow-sm border border-slate-200 px-4 py-6 text-sm text-yecny-slate">
+					No accounts yet. Convert an intake (or run the backfill script) to
+					auto-seed the onboarding account list, or click �Add Account�.
+				</div>
+			)}
+
+			{/* Grouped lists */}
+			{(loading ? ["Assets", "Liabilities", "Equity"] : GROUP_ORDER).map(
+				(groupName) => {
+					const rows = grouped[groupName] || [];
+					if (!loading && rows.length === 0) return null;
+
+					const defaultType =
+						groupName === "Assets"
+							? "checking"
+							: groupName === "Liabilities"
+							? "credit_card"
+							: groupName === "Equity"
+							? "owner_contributions"
+							: "checking";
+
+					return (
+						<div
+							key={groupName}
+							className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden"
+						>
+							<div className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+								<div className="text-sm font-semibold text-yecny-charcoal">
+									{groupName}{" "}
+									<span className="text-xs font-normal text-yecny-slate">
+										{loading ? "" : `(${rows.length})`}
+									</span>
+								</div>
+								<button
+									onClick={() => openCreateModalWithType(defaultType)}
+									className="text-xs text-yecny-primary hover:underline"
+								>
+									+ Add to {groupName}
+								</button>
+							</div>
+
+							{loading ? (
+								<div className="px-4 py-4 text-sm text-yecny-slate">
+									Loading�
+								</div>
+							) : (
+								<div className="overflow-x-auto">
+									<table className="min-w-full text-sm">
+										<thead className="bg-slate-50">
+											<tr>
+												<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+													Name
+												</th>
+												<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+													Type
+												</th>
+												<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+													Required docs
+												</th>
+												<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+													Last 4
+												</th>
+												<th className="text-left px-4 py-2 font-medium text-yecny-slate">
+													Active
+												</th>
+												<th className="text-right px-4 py-2 font-medium text-yecny-slate">
+													Actions
+												</th>
+											</tr>
+										</thead>
+										<tbody>
+											{rows.map((account, idx) => {
+												const isLast = idx === rows.length - 1;
+												return (
+													<tr
+														key={account.id}
+														className={
+															"hover:bg-slate-50 transition-colors" +
+															(isLast ? "" : " border-b border-slate-100")
+														}
+													>
+														{" "}
+														<td className="px-4 py-2">
+															<div className="font-medium text-yecny-charcoal">
+																{account.name}
+															</div>
+														</td>
+														<td className="px-4 py-2">
+															{getTypeLabel(account.type)}
+														</td>
+														<td className="px-4 py-2">
+															<DocsChips docs={getDocs(account.type)} />
+														</td>
+														<td className="px-4 py-2">
+															{account.last4 || (
+																<span className="text-xs text-slate-400">
+																	-
+																</span>
+															)}
+														</td>
+														<td className="px-4 py-2">
+															{account.is_active ? (
+																<span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
+																	Active
+																</span>
+															) : (
+																<span className="text-xs px-2 py-0.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200">
+																	Inactive
+																</span>
+															)}
+														</td>
+														<td className="px-4 py-2 text-right">
+															<button
+																onClick={() => openEditModal(account)}
+																className="text-xs text-yecny-primary hover:underline mr-3"
+															>
+																Edit
+															</button>
+															<button
+																onClick={() => handleDelete(account)}
+																className="text-xs text-red-600 hover:underline"
+															>
+																Delete
+															</button>
+														</td>
+													</tr>
+												);
+											})}
+										</tbody>
+									</table>
+								</div>
+							)}
+						</div>
+					);
+				}
+			)}
 			{/* Modal */}
 			{modalOpen && (
 				<div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
@@ -659,7 +883,13 @@ function AccountsTab({ clientId }) {
 										</option>
 									))}
 								</select>
+
+								{/* Required docs hint */}
+								<div className="mt-2 text-[11px] text-slate-500">
+									Required docs: <DocsChips docs={getDocs(form.type)} />
+								</div>
 							</div>
+
 							<div className="flex items-center gap-3">
 								<div className="flex-1">
 									<label className="block text-xs font-medium text-yecny-slate mb-1">
@@ -685,7 +915,6 @@ function AccountsTab({ clientId }) {
 									Active
 								</label>
 							</div>
-
 							<div className="pt-2 border-t border-slate-200 flex justify-end gap-2">
 								<button
 									type="button"
